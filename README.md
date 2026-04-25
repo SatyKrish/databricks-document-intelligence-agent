@@ -62,13 +62,13 @@ A **Databricks-native document intelligence + agent** stack: parse PDFs once wit
 
 Databricks shipped a lot of new generative-AI surface area in 2025–2026: `ai_parse_document`, Mosaic AI Vector Search, the Agent Framework, AI Gateway, Lakebase, Databricks Apps. Tutorials show each piece in isolation; nobody shows them wired together with **eval gates, governance, and reproducible deploys** the way you'd actually ship to analysts.
 
-This repo is that worked example. Drop a PDF into a governed UC volume; ten minutes later, an analyst can ask cited questions in plain English with end-to-end audit. The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, evaluation gate — is one **Databricks Asset Bundle (DAB)** that recreates from source on any workspace.
+This repo is that worked example. Drop a PDF into a governed UC volume; ten minutes later, an analyst can ask cited questions in plain English with end-to-end audit. The whole stack is described declaratively as one **Databricks Asset Bundle (DAB)** plus a small bootstrap script. DAB manages catalog/schema/volume, pipeline, jobs, the Vector Search **endpoint**, the Lakebase instance, the serving endpoint, the monitor, the app, and the dashboard; the Vector Search **index** itself is created and synced by `jobs/index_refresh/sync_index.py` (DAB doesn't yet manage indexes as a resource type), and the agent model version is registered by `agent/log_and_register.py`. The bootstrap script orchestrates them in the right order.
 
 It also demonstrates a development workflow: **Spec-Kit** for spec-driven design, **Claude Code** with Databricks skill bundles for AI-assisted implementation, six **non-negotiable constitution principles** that gate every plan. See [How it's built](#how-its-built--three-pillars).
 
 ## Features
 
-- **End-to-end document intelligence pipeline** — Auto Loader ingest → `ai_parse_document` → section explosion → `ai_classify` + `ai_extract` → 5-dim quality rubric → Vector Search index. SQL-only (Lakeflow Spark Declarative Pipelines).
+- **End-to-end document intelligence pipeline** — Auto Loader ingest → `ai_parse_document` → section explosion → `ai_classify` + `ai_extract` → 5-dim quality rubric → Vector Search Delta-Sync index (the endpoint is DAB-managed; the index is created/synced by `jobs/index_refresh/sync_index.py`). SQL-only pipeline (Lakeflow Spark Declarative Pipelines).
 - **Cited-answer agent** — Mosaic AI Agent Framework (MLflow `pyfunc`), hybrid retrieval + Mosaic re-ranker, single-filing and cross-company supervisor paths. Logged with auth_policy for end-to-end OBO when the workspace supports it.
 - **Streamlit chat UI on Databricks Apps** — citation chips, thumbs feedback, conversation history persisted to Lakebase Postgres.
 - **Eval-gated promotion** — `mlflow.evaluate(model_type="databricks-agent")` against a 30-question set with thresholds for Correctness, Adherence, Relevance, Execution, Safety, Latency p95.
@@ -95,14 +95,15 @@ Full checklists in [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
 | Tool | Version | Why |
 |---|---|---|
 | Python | 3.11 or 3.12 | Agent + app runtime; tests; eval gate |
-| Databricks CLI | ≥ 0.298 | DAB schema (`databricks bundle validate --strict`), `databricks apps deploy`, UC permissions API |
+| Databricks CLI | ≥ 0.298 | DAB `--strict` validation, `bundle run` for apps, UC permissions API, Lakebase + serving-endpoint resource schemas |
 | Git | any recent | Repo + Spec-Kit commit hooks |
+| `jq` | any recent | Workspace ID discovery in step 2 of Getting Started (CLI-only fallback shown inline if you don't have it) |
 | `make` (optional) | any | Convenience targets if you choose to add them |
 
 macOS install:
 
 ```bash
-brew install python@3.12
+brew install python@3.12 jq
 brew install databricks/tap/databricks
 ```
 
@@ -127,7 +128,7 @@ You need a workspace with **all** of the following enabled:
 
 ### Free trial signup
 
-Don't have a workspace? The fastest path is the **14-day Premium trial** at <https://databricks.com/try-databricks>. The trial includes everything above (foundation models, Mosaic AI, serverless SQL, Lakebase, Apps).
+Don't have a workspace? The fastest path is the **14-day Premium trial** at <https://databricks.com/try-databricks>. Verify each entitlement above is enabled in your trial workspace and region — Mosaic AI Vector Search, Lakebase, Databricks Apps, and Model Serving rollout varies by cloud and region, so a Premium tier doesn't automatically guarantee every feature is on. Workspace settings → Previews / Compute → Mosaic AI is the place to check.
 
 > Note: **Free Edition** at databricks.com/learn/free-edition does not include Mosaic AI Vector Search or Model Serving and **cannot run this reference**. Use the Premium trial.
 
@@ -154,7 +155,11 @@ python -m venv .venv
 ### 2. Discover your workspace IDs
 
 ```bash
+# With jq:
 databricks warehouses list --output json | jq '.[] | {id, name, state}'
+
+# Without jq (CLI-only fallback):
+databricks warehouses list
 ```
 
 Pick the ID of a serverless warehouse (state can be `STOPPED` — it auto-starts). You'll need it as `DOCINTEL_WAREHOUSE_ID`.
@@ -199,12 +204,23 @@ You should see a grounded answer with citation chips linking to `ACME_10K_2024.p
 
 ### 7. Steady-state deploys
 
-After the first bring-up, iteration is plain `bundle deploy`:
+After the first bring-up, iteration depends on what changed:
 
 ```bash
+# YAML / pipeline / job / app config changes
 databricks bundle deploy -t dev
-databricks bundle run -t dev analyst_app    # apply app config + restart
+databricks bundle run -t dev analyst_app                      # apply app config + restart
+
+# Agent code changes (agent/*.py): register a new model version
+# and repoint the existing serving endpoint in-place.
+DOCINTEL_CATALOG=workspace DOCINTEL_SCHEMA=docintel_10k_dev \
+  python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
+
+# Pipeline SQL changes that need to re-process existing filings
+databricks bundle run -t dev doc_intel_pipeline
 ```
+
+You can also re-run `./scripts/bootstrap-dev.sh` — it auto-detects steady-state and does the full cycle (deploy → refresh data → register/promote → app run → grants → smoke) in one command.
 
 For a guided 30-minute tour, see [`specs/001-doc-intel-10k/quickstart.md`](./specs/001-doc-intel-10k/quickstart.md).
 
@@ -271,6 +287,8 @@ For a guided 30-minute tour, see [`specs/001-doc-intel-10k/quickstart.md`](./spe
    summary instead — tighter, more searchable. Constitution principle IV:
    "Quality before retrieval."
 ```
+
+**Ownership note**: DAB manages the Vector Search **endpoint** (`resources/consumers/filings_index.yml`) and the index-refresh **job** (`resources/consumers/index_refresh.job.yml`). The **index** itself isn't yet a DAB-managed resource type as of CLI 0.298 — `jobs/index_refresh/sync_index.py` creates the Delta-Sync index on first run and triggers a sync on subsequent runs. That's why the bootstrap script's stage-2 deploy creates the endpoint + job, and the job's first execution materializes the actual index.
 
 ### Agent has two paths, one endpoint
 
@@ -616,11 +634,12 @@ End-to-end is exercised by [`./scripts/bootstrap-dev.sh`](./scripts/bootstrap-de
 
 | Path | When |
 |---|---|
-| `./scripts/bootstrap-dev.sh` | First time on a fresh workspace, or after `bundle destroy`. Handles staged deploy + data production + UC grants. |
-| `databricks bundle deploy -t dev` | Steady-state iteration after the first bring-up. |
+| `./scripts/bootstrap-dev.sh` | Fresh-workspace bring-up (or after `bundle destroy`). Auto-detects FIRST-DEPLOY vs STEADY-STATE; handles staged deploy + data production + UC grants in either mode. |
+| `databricks bundle deploy -t dev` | YAML / pipeline / job / app config changes after the first bring-up. |
 | `databricks bundle run -t dev analyst_app` | After any change to `app/` or `resources/consumers/analyst.app.yml` — required to apply runtime config + restart the app. |
+| `python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev` | After agent code changes (`agent/*.py`). Registers a new UC model version and repoints the existing serving endpoint in-place. |
 | `databricks bundle deploy -t prod --var service_principal_id=<sp-app-id>` | Production deploy, run as the prod SP. |
-| GitHub Actions on push to `main` | CI mirrors the staged shape: foundation → seed → register → consumers → app → grants → CLEARS gate. |
+| GitHub Actions on push to `main` | Steady-state CI: full `bundle deploy` → wait for Lakebase AVAILABLE → upload samples + run pipeline + register/promote agent → UC grants → `bundle run analyst_app` → CLEARS eval gate. (The first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-dev.sh`.) |
 
 For day-2 ops (rolling agent versions, debugging low quality scores, inspecting CLEARS metrics in MLflow), see [`docs/runbook.md`](./docs/runbook.md). For the production-readiness checklist, see [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
 
@@ -702,7 +721,8 @@ databricks/
 │   └── extensions.yml             # Auto-commit hooks per phase
 │
 └── .github/workflows/
-    └── deploy.yml                 # PR validate; main → staged deploy + CLEARS gate
+    └── deploy.yml                 # PR validate; main → steady-state deploy + CLEARS gate
+                                   # (first-ever bring-up must be done locally via bootstrap-dev.sh)
 ```
 
 ---
