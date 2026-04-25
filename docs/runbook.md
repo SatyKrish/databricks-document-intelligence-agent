@@ -66,6 +66,28 @@ Failures are logged as a JSON list under the run tag `failures`. The script exit
 | CLEARS Latency axis fails | Re-rank window too large | Reduce candidate window in `agent/retrieval.py` from 25 to 15 |
 | App errors connecting to Lakebase | Database resource binding missing Postgres env vars | Check the `docintel-lakebase` resource binding and `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` in the App runtime |
 
+## Enabling end-to-end OBO
+
+Currently disabled in this workspace (organization 7474654018084939). The agent code is OBO-ready (`agent/_obo.user_workspace`, `VectorSearchClient(credential_strategy=CredentialStrategy.MODEL_SERVING_USER_CREDENTIALS)` in `retrieval.py`, `auth_policy` declared in `log_and_register.py`), and the app forwards `x-forwarded-access-token` via `app/app.py:_user_client`. **What's missing is the App-side scope declaration**, which the workspace rejects until the feature is enabled.
+
+**Bootstrap prints a `⚠ APP-LEVEL OBO IS OPERATIONALLY DISABLED` banner** whenever the `user_api_scopes` block in `resources/consumers/analyst.app.yml` is commented out, so this state is visible in every bring-up log.
+
+To enable OBO end-to-end:
+
+1. **Workspace admin** enables the "Databricks Apps - user token passthrough" feature in workspace settings.
+2. Uncomment the `user_api_scopes` block in `resources/consumers/analyst.app.yml`. Required scopes for the analyst app's call chain:
+   ```yaml
+   user_api_scopes:
+     - serving.serving-endpoints     # invoke analyst-agent endpoint as user
+     - sql                            # agent's tools.py runs UC SQL
+     - iam.access-control:read        # default
+     - iam.current-user:read          # default
+   ```
+3. Redeploy: `databricks bundle deploy -t dev && databricks bundle run -t dev analyst_app`.
+4. Verify: bootstrap step 5's scope check now asserts (rather than skipping). Visit the deployed app, ask a question, confirm in audit logs that the agent's UC SQL runs under the user's identity (not the app SP).
+
+The agent-side `auth_policy` declared in `log_and_register.py` uses the **agent-side** scopes (`model-serving`, `vector-search`) per the Model Serving OBO docs — these are different from the App-side scopes above and need no workspace feature flag; they just plumb the per-request user token through the served pyfunc.
+
 ## CLEARS thresholds
 
 Defined in `evals/clears_eval.py` and pinned by `spec.md` FR-010 / Constitution Principle V:

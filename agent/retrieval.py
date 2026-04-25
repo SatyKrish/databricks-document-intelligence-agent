@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
-from databricks.vector_search.client import VectorSearchClient
+from databricks.vector_search.client import CredentialStrategy, VectorSearchClient
 
-from agent._obo import user_vector_search_kwargs, user_workspace
+from agent._obo import user_workspace
 
 
 CATALOG = os.environ["DOCINTEL_CATALOG"]
@@ -66,8 +66,18 @@ def hybrid_retrieve(
 ) -> tuple[list[Citation], int]:
     """Pull `candidate_window` hybrid candidates, re-rank to `top_k`. Returns (citations, retrieved_count)."""
 
-    ws = user_workspace()
-    vsc = VectorSearchClient(**user_vector_search_kwargs(ws))
+    # VS user-scope: per Databricks Model Serving OBO docs, pass
+    # CredentialStrategy.MODEL_SERVING_USER_CREDENTIALS rather than extracting
+    # the token manually. The strategy resolves the per-request user context
+    # the same way ModelServingUserCredentials does for WorkspaceClient.
+    try:
+        vsc = VectorSearchClient(
+            credential_strategy=CredentialStrategy.MODEL_SERVING_USER_CREDENTIALS,
+            disable_notice=True,
+        )
+    except Exception:
+        # Outside Model Serving (tests, local dev) or OBO disabled — SP fallback.
+        vsc = VectorSearchClient(disable_notice=True)
     index = vsc.get_index(endpoint_name=ENDPOINT, index_name=INDEX_FQN)
     raw = index.similarity_search(
         query_text=question,

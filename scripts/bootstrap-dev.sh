@@ -230,7 +230,18 @@ print(f'  OBO scopes intact: {sorted(scopes)}')
 " || log "  warn: OBO scopes wiped — re-apply via 'databricks apps update $APP_NAME --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read'"
   fi
 else
-  log "  user_api_scopes not declared (workspace feature off); skipping OBO scope check"
+  log ""
+  log "  ⚠ APP-LEVEL OBO IS OPERATIONALLY DISABLED"
+  log "     resources/consumers/analyst.app.yml has user_api_scopes commented out, so:"
+  log "       • Databricks Apps will NOT inject x-forwarded-access-token into requests."
+  log "       • app/app.py:_user_client falls back to SP creds for every user."
+  log "       • UC ACLs in the agent's downstream calls run as the app SP, not the user."
+  log "     This is a deliberate fallback because the workspace lacks the user-token-"
+  log "     passthrough feature. To enable OBO end-to-end:"
+  log "       1. Workspace admin enables 'Databricks Apps - user token passthrough'."
+  log "       2. Uncomment the user_api_scopes block in analyst.app.yml."
+  log "       3. Re-deploy: databricks bundle deploy -t $TARGET && databricks bundle run -t $TARGET analyst_app"
+  log ""
 fi
 
 # ─── Step 6: smoke check ────────────────────────────────────────────────────

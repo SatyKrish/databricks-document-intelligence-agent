@@ -37,12 +37,13 @@ def _auth_policy(catalog: str, schema: str, warehouse_id: str) -> AuthPolicy:
     deploy time (skill databricks-apps/platform-guide.md §"Service Principal
     Permissions" — auto-grant by declaration).
 
-    User scopes: required for `ModelServingUserCredentials()` inside predict
-    to authorize calls on behalf of the invoking user. Per Databricks Apps
-    user-authorization docs, `serving.serving-endpoints` is needed to invoke
-    Model Serving (foundation + rerank) under the user's identity;
-    `vectorsearch.vector-search-indexes` for VS; `sql` for the SQL warehouse
-    in tools.py.
+    User scopes: documented agent-side scopes per Databricks Model Serving
+    OBO docs (https://docs.databricks.com/aws/en/generative-ai/agent-framework/
+    agent-authentication-model-serving) — `model-serving` for downstream
+    serving-endpoint calls (foundation + rerank), `vector-search` for the VS
+    index. App-side scopes (`serving.serving-endpoints`,
+    `vectorsearch.vector-search-indexes`) are different — those are declared
+    on the App resource, not here.
     """
     resources = [
         DatabricksServingEndpoint(endpoint_name=_FOUNDATION_ENDPOINT),
@@ -53,9 +54,8 @@ def _auth_policy(catalog: str, schema: str, warehouse_id: str) -> AuthPolicy:
     return AuthPolicy(
         system_auth_policy=SystemAuthPolicy(resources=resources),
         user_auth_policy=UserAuthPolicy(api_scopes=[
-            "serving.serving-endpoints",
-            "vectorsearch.vector-search-indexes",
-            "sql",
+            "model-serving",
+            "vector-search",
         ]),
     )
 
