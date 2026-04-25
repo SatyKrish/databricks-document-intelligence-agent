@@ -18,6 +18,7 @@ import mlflow
 from databricks.sdk import WorkspaceClient
 
 from agent import retrieval
+from agent._obo import user_workspace
 from agent.retrieval import Citation
 
 
@@ -97,7 +98,7 @@ def _single_filing(
 
 
 def _generate(*, question: str, citations: list[Citation]) -> str:
-    w = WorkspaceClient()
+    w = user_workspace()
     sources = "\n\n".join(
         f"[{i + 1}] {c.filename} — {c.section_label}\n{c.snippet}"
         for i, c in enumerate(citations)

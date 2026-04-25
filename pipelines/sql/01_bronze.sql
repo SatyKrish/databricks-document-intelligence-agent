@@ -6,7 +6,11 @@
 -- one STREAM read_files() per source path. Both bronze_filings and
 -- bronze_filings_rejected derive from the same checkpoint via a streaming view.
 
-CREATE TEMPORARY STREAMING VIEW raw_pdf_arrivals AS
+-- Skill: databricks-pipelines/references/temporary-view-sql.md — `CREATE
+-- TEMPORARY VIEW` is the only canonical form; the view becomes a streaming
+-- source by reading `STREAM read_files(...)` in its body. Downstream tables
+-- then read it via `STREAM(raw_pdf_arrivals)`.
+CREATE TEMPORARY VIEW raw_pdf_arrivals AS
 SELECT
   path,
   reverse(split(path, '/'))[0]                AS filename,

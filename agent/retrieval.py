@@ -16,6 +16,8 @@ from typing import Any
 from databricks.sdk import WorkspaceClient
 from databricks.vector_search.client import VectorSearchClient
 
+from agent._obo import user_vector_search_kwargs, user_workspace
+
 
 CATALOG = os.environ["DOCINTEL_CATALOG"]
 SCHEMA = os.environ["DOCINTEL_SCHEMA"]
@@ -64,7 +66,8 @@ def hybrid_retrieve(
 ) -> tuple[list[Citation], int]:
     """Pull `candidate_window` hybrid candidates, re-rank to `top_k`. Returns (citations, retrieved_count)."""
 
-    vsc = VectorSearchClient(disable_notice=True)
+    ws = user_workspace()
+    vsc = VectorSearchClient(**user_vector_search_kwargs(ws))
     index = vsc.get_index(endpoint_name=ENDPOINT, index_name=INDEX_FQN)
     raw = index.similarity_search(
         query_text=question,
@@ -98,7 +101,7 @@ def hybrid_retrieve(
 
 def _rerank(question: str, documents: list[dict[str, str]], *, top_k: int) -> list[int]:
     """Calls the Mosaic re-ranker endpoint; returns the original-row indices ordered by relevance."""
-    w = WorkspaceClient()
+    w = user_workspace()
     try:
         response = w.serving_endpoints.query(
             name=RERANK_ENDPOINT,

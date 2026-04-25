@@ -61,12 +61,19 @@ jobs:
         run: |
           python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
 
-      - name: Apply post-deploy schema grants (UC API; not DAB-supported for schemas)
-        if: ${{ vars.DOCINTEL_ANALYST_GROUP != '' }}
+      - name: Apply post-deploy UC grants (catalog + schema; not DAB-supported)
+        # UC requires the full chain: USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE.
+        # Defaults to "account users" so CI does not silently skip when the
+        # GitHub variable is unset.
+        env:
+          ANALYST_GROUP: ${{ vars.DOCINTEL_ANALYST_GROUP || 'account users' }}
         run: |
-          databricks api post \
+          databricks api patch \
+            "/api/2.1/unity-catalog/permissions/CATALOG/${DOCINTEL_CATALOG}" \
+            --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_CATALOG\"]}]}" || true
+          databricks api patch \
             "/api/2.1/unity-catalog/permissions/SCHEMA/${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}" \
-            --json "{\"changes\":[{\"principal\":\"${{ vars.DOCINTEL_ANALYST_GROUP }}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" || true
+            --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" || true
 
       - name: Apply app config + restart (canonical apps deploy command)
         # Skill: databricks-apps/references/platform-guide.md §Deployment Workflow.
@@ -75,13 +82,23 @@ jobs:
 
       - name: Verify OBO scopes survived deploy
         # Skill: platform-guide.md §"Destructive Updates Warning" — `bundle run`
-        # may wipe user_api_scopes. Fail loudly so we re-apply.
+        # may wipe user_api_scopes. Fail loudly so we re-apply. Asserts the full
+        # set required by the agent's call chain (serving + sql), not just sql.
+        # Skipped when user_api_scopes are not declared (workspace feature off).
         run: |
-          databricks apps get doc-intel-analyst-dev --output json > /tmp/app.json
-          python -c "import json,sys; \
-            app=json.load(open('/tmp/app.json')); \
-            scopes=set(app.get('user_api_scopes') or []); \
-            assert 'sql' in scopes, f'OBO scope sql missing — got {scopes}'"
+          if grep -q '^      user_api_scopes:' resources/apps/analyst.app.yml; then
+            databricks apps get doc-intel-analyst-dev --output json > /tmp/app.json
+            python -c "
+import json
+app = json.load(open('/tmp/app.json'))
+scopes = set(app.get('user_api_scopes') or [])
+required = {'serving.serving-endpoints', 'sql'}
+missing = required - scopes
+assert not missing, f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})'
+"
+          else
+            echo "user_api_scopes not declared (workspace feature off); skipping OBO scope check"
+          fi
 
       - name: CLEARS evaluation gate
         run: python evals/clears_eval.py --endpoint analyst-agent-dev --dataset evals/dataset.jsonl

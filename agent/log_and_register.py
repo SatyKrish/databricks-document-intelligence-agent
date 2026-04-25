@@ -11,11 +11,53 @@ import os
 import sys
 
 import mlflow
+from mlflow.models.auth_policy import AuthPolicy, SystemAuthPolicy, UserAuthPolicy
+from mlflow.models.resources import (
+    DatabricksServingEndpoint,
+    DatabricksSQLWarehouse,
+    DatabricksVectorSearchIndex,
+)
 from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import AnyType, ColSpec, Schema
 from databricks.sdk import WorkspaceClient
 
 from agent.analyst_agent import AnalystAgent
+
+
+# Foundation + re-rank endpoints called by the agent (resolved here so the
+# log_model auth_policy can enumerate them). Defaults match databricks.yml.
+_FOUNDATION_ENDPOINT = os.environ.get("DOCINTEL_FOUNDATION_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct")
+_RERANK_ENDPOINT = os.environ.get("DOCINTEL_RERANK_ENDPOINT", "databricks-bge-rerank-v2")
+
+
+def _auth_policy(catalog: str, schema: str, warehouse_id: str) -> AuthPolicy:
+    """OBO-ready auth policy for the analyst pyfunc.
+
+    System resources: enumerated so MLflow grants the deploying SP access at
+    deploy time (skill databricks-apps/platform-guide.md §"Service Principal
+    Permissions" — auto-grant by declaration).
+
+    User scopes: required for `ModelServingUserCredentials()` inside predict
+    to authorize calls on behalf of the invoking user. Per Databricks Apps
+    user-authorization docs, `serving.serving-endpoints` is needed to invoke
+    Model Serving (foundation + rerank) under the user's identity;
+    `vectorsearch.vector-search-indexes` for VS; `sql` for the SQL warehouse
+    in tools.py.
+    """
+    resources = [
+        DatabricksServingEndpoint(endpoint_name=_FOUNDATION_ENDPOINT),
+        DatabricksServingEndpoint(endpoint_name=_RERANK_ENDPOINT),
+        DatabricksVectorSearchIndex(index_name=f"{catalog}.{schema}.filings_summary_idx"),
+        DatabricksSQLWarehouse(warehouse_id=warehouse_id),
+    ]
+    return AuthPolicy(
+        system_auth_policy=SystemAuthPolicy(resources=resources),
+        user_auth_policy=UserAuthPolicy(api_scopes=[
+            "serving.serving-endpoints",
+            "vectorsearch.vector-search-indexes",
+            "sql",
+        ]),
+    )
 
 
 def _signature() -> ModelSignature:
@@ -95,6 +137,7 @@ def main() -> int:
 
     catalog = os.environ["DOCINTEL_CATALOG"]
     schema = os.environ["DOCINTEL_SCHEMA"]
+    warehouse_id = os.environ["DOCINTEL_WAREHOUSE_ID"]
     name = f"{catalog}.{schema}.analyst_agent"
     alias = args.target
 
@@ -107,6 +150,7 @@ def main() -> int:
             signature=_signature(),
             code_paths=["agent"],
             pip_requirements=open("agent/requirements.txt").read().splitlines(),
+            auth_policy=_auth_policy(catalog, schema, warehouse_id),
         )
         version = info.registered_model_version
         client = mlflow.tracking.MlflowClient(registry_uri="databricks-uc")

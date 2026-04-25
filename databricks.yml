@@ -55,7 +55,7 @@ targets:
     variables:
       catalog: workspace
       schema: docintel_10k_dev
-      lakebase_instance: docintel-dev-state-v2
+      lakebase_instance: docintel-dev-state-v3
     resources:
       pipelines:
         doc_intel_pipeline:

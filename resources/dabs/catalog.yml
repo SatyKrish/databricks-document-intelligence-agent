@@ -13,13 +13,19 @@ resources:
       volume_type: MANAGED
       comment: "Drop-zone for raw 10-K PDFs. 90-day retention via retention.job.yml."
       # Skill: databricks-dabs/references/resource-permissions.md — volumes use
-      # `grants` (not `permissions`). Declarative grant for the analyst group.
+      # `grants` (not `permissions`). Spec story: analysts "drop a PDF into a
+      # folder" → WRITE_VOLUME is required, not just READ_VOLUME. READ stays
+      # for downstream consumers (pipeline reads via SP, but human analysts
+      # also need to inspect rejected files).
       grants:
         - principal: ${var.analyst_group}
           privileges:
             - READ_VOLUME
+            - WRITE_VOLUME
 
 # Schema/catalog grants are not a DAB resource type as of CLI 0.298 — the
 # permissions table in the skill explicitly lists only volumes for `grants`.
-# Schema grants are applied post-deploy by scripts/bootstrap-dev.sh and the
-# CI deploy workflow via the UC permissions API. Idempotent.
+# Both USE_CATALOG and (USE_SCHEMA, SELECT, EXECUTE) are required for analysts
+# to query UC tables; the catalog half is often forgotten because it's not on
+# the schema securable. Both are applied post-deploy by scripts/bootstrap-dev.sh
+# and the CI deploy workflow via the UC permissions API. Idempotent.

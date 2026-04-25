@@ -42,15 +42,39 @@ THRESHOLDS = {
     "safety": 0.99,
 }
 
-# Map Mosaic AI Agent Eval judge names to constitution CLEARS axes.
-# (E)xecution and (L)atency are computed from the raw response/timing —
-# Mosaic AI doesn't ship judges for those.
-JUDGE_TO_AXIS = {
-    "correctness": "correctness",
-    "guideline_adherence": "adherence",
-    "chunk_relevance_precision": "relevance",
-    "safety": "safety",
+# Map Mosaic AI Agent Evaluation aggregate metric names → constitution CLEARS axes.
+# Per Databricks Agent Evaluation docs, judge metrics in `result.metrics` use
+# names like `response/llm_judged/correctness/rating/percentage` for response
+# judges and `retrieval/llm_judged/chunk_relevance/precision/average` for
+# retrieval judges. Per-row results live in `result.tables['eval_results']`,
+# NOT `result.metrics`.
+# (E)xecution and (L)atency are computed from the raw response/timing — Mosaic
+# AI doesn't ship judges for those.
+AGGREGATE_METRIC_KEYS = {
+    "correctness": [
+        "response/llm_judged/correctness/rating/percentage",
+        "response/llm_judged/correctness/rating/average",
+    ],
+    "adherence": [
+        "response/llm_judged/guideline_adherence/rating/percentage",
+        "response/llm_judged/guideline_adherence/rating/average",
+    ],
+    "relevance": [
+        "retrieval/llm_judged/chunk_relevance/precision/average",
+        "retrieval/llm_judged/chunk_relevance/precision/percentage",
+    ],
+    "safety": [
+        "response/llm_judged/safety/rating/percentage",
+        "response/llm_judged/safety/rating/average",
+    ],
 }
+
+# Per-row column names in `result.tables['eval_results']` for slicing
+# (P2 vs P3 correctness — SC-002 / SC-003).
+PER_ROW_CORRECTNESS_COLS = (
+    "response/llm_judged/correctness/rating",
+    "response/llm_judged/correctness/value",
+)
 
 GLOBAL_GUIDELINES = [
     "Cite sources inline as [N] (e.g., [1], [2]) when grounded.",
@@ -108,17 +132,22 @@ def _execute(endpoint: str, items: list[dict[str, Any]]) -> tuple[pd.DataFrame, 
     return pd.DataFrame(eval_rows), latencies, raw_responses
 
 
-def _enforce(metrics: dict[str, float], items: list[dict[str, Any]],
-             raw_responses: list[dict[str, Any]], latencies: list[int]) -> list[str]:
+def _enforce(result: Any, items: list[dict[str, Any]],
+             raw_responses: list[dict[str, Any]], latencies: list[int]) -> tuple[list[str], dict[str, float]]:
     failures: list[str] = []
+    metrics = result.metrics or {}
 
-    # Map judge metrics → CLEARS axes. Mosaic AI returns metrics like
-    # "correctness/mean", "guideline_adherence/mean", etc.
+    # Pull aggregate judge scores using the documented Mosaic AI metric keys.
+    # Some keys are returned as percentages (0-100); normalize to 0-1 to match
+    # the constitution's threshold scale.
     summary: dict[str, float] = {}
-    for judge, axis in JUDGE_TO_AXIS.items():
-        for key in (f"{judge}/mean", f"{judge}/v1/mean", judge):
+    for axis, candidate_keys in AGGREGATE_METRIC_KEYS.items():
+        for key in candidate_keys:
             if key in metrics:
-                summary[axis] = float(metrics[key])
+                value = float(metrics[key])
+                if "percentage" in key and value > 1.0:
+                    value = value / 100.0
+                summary[axis] = value
                 break
 
     # Custom axes: Execution from agent_path; Latency p95 from raw timings.
@@ -132,20 +161,33 @@ def _enforce(metrics: dict[str, float], items: list[dict[str, Any]],
     # Threshold enforcement
     for axis, threshold in THRESHOLDS.items():
         if axis not in summary:
-            failures.append(f"{axis} not produced by judges (got metrics: {sorted(metrics.keys())[:8]}...)")
+            failures.append(
+                f"{axis} not produced by judges; available metric keys: "
+                f"{sorted(k for k in metrics if 'llm_judged' in k or 'retrieval' in k)[:6]}..."
+            )
             continue
         actual = summary[axis]
         ok = actual <= threshold if axis == "latency_p95_ms" else actual >= threshold
         if not ok:
             failures.append(f"{axis} {actual:.3f} fails threshold {threshold}")
 
-    # SC-002 / SC-003 — per-category correctness slices.
-    p2_idxs = [i for i, it in enumerate(items) if it["category"] == "P2"]
-    p3_idxs = [i for i, it in enumerate(items) if it["category"] == "P3"]
-    if "correctness/per_row" in metrics or "correctness" in metrics:
-        # If per-row correctness is available, slice it; else fall back to overall.
-        per_row = metrics.get("correctness/per_row") or [summary.get("correctness", 0.0)] * len(items)
-        if isinstance(per_row, list) and len(per_row) == len(items):
+    # SC-002 / SC-003 — per-category correctness slices from the eval_results table.
+    eval_table = (result.tables or {}).get("eval_results") if hasattr(result, "tables") else None
+    if eval_table is not None and len(eval_table) == len(items):
+        per_row_col = next((c for c in PER_ROW_CORRECTNESS_COLS if c in eval_table.columns), None)
+        if per_row_col is not None:
+            def _to_float(v: Any) -> float:
+                if v is True or (isinstance(v, str) and v.lower() == "yes"):
+                    return 1.0
+                if v is False or (isinstance(v, str) and v.lower() == "no"):
+                    return 0.0
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return 0.0
+            per_row = [_to_float(v) for v in eval_table[per_row_col].tolist()]
+            p2_idxs = [i for i, it in enumerate(items) if it["category"] == "P2"]
+            p3_idxs = [i for i, it in enumerate(items) if it["category"] == "P3"]
             p2_corr = statistics.mean([per_row[i] for i in p2_idxs]) if p2_idxs else 0.0
             p3_corr = statistics.mean([per_row[i] for i in p3_idxs]) if p3_idxs else 0.0
             mlflow.log_metric("p2_correctness", p2_corr)
@@ -154,6 +196,15 @@ def _enforce(metrics: dict[str, float], items: list[dict[str, Any]],
                 failures.append(f"P2 correctness {p2_corr:.2f} < 0.80 (SC-002)")
             if p3_corr < 0.70:
                 failures.append(f"P3 correctness {p3_corr:.2f} < 0.70 (SC-003)")
+        else:
+            failures.append(
+                f"per-row correctness column not found; available eval_results columns: "
+                f"{list(eval_table.columns)[:8]}..."
+            )
+    else:
+        failures.append(
+            "result.tables['eval_results'] missing or row-count mismatch; SC-002/SC-003 slice skipped"
+        )
 
     # SC-006 — `garbage_10K_2024.pdf` must never appear in citations of any item.
     # The garbage filing scored < 22/30 by the rubric, so it is embed_eligible=false.
@@ -170,7 +221,7 @@ def _enforce(metrics: dict[str, float], items: list[dict[str, Any]],
     for k, v in summary.items():
         mlflow.log_metric(k, v)
 
-    return failures
+    return failures, summary
 
 
 def main() -> int:
@@ -197,11 +248,16 @@ def main() -> int:
             },
         )
 
-        failures = _enforce(result.metrics, items, raw_responses, latencies)
+        failures, summary = _enforce(result, items, raw_responses, latencies)
         mlflow.set_tag("failures", json.dumps(failures))
         mlflow.set_tag("endpoint", args.endpoint)
+        # Surface the judge-aggregate metrics that mapped to CLEARS axes plus
+        # any unmapped llm_judged keys for debuggability.
+        all_metrics = result.metrics or {}
+        debug_metrics = {k: v for k, v in all_metrics.items() if "llm_judged" in k or "retrieval" in k}
         print(json.dumps({
-            "metrics": {k: v for k, v in result.metrics.items() if not k.endswith("/per_row")},
+            "summary": summary,
+            "judge_metrics": debug_metrics,
             "failures": failures,
             "run_id": run.info.run_id,
         }, indent=2, default=str))

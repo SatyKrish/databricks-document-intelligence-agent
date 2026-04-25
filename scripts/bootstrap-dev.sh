@@ -94,33 +94,48 @@ log "step 5b/5: applying app config + restart (analyst_app)"
 databricks bundle run -t "$TARGET" analyst_app || \
   log "warn: analyst_app run failed — fix the app and retry 'databricks bundle run -t $TARGET analyst_app'"
 
-# OBO scope verification: `bundle run` may wipe user_api_scopes
-# (skill platform-guide §"Destructive Updates Warning").
+# OBO scope verification (skill platform-guide §"Destructive Updates Warning"):
+# only relevant when user_api_scopes is set in resources/apps/analyst.app.yml.
+# This workspace currently lacks the user-token-passthrough feature, so the
+# scopes are commented out. Re-enable this block when the feature lands.
 APP_NAME="doc-intel-analyst-${TARGET}"
-log "step 5c/5: verifying OBO scopes on $APP_NAME"
-databricks apps get "$APP_NAME" --output json > /tmp/docintel-app.json || \
-  log "warn: could not fetch app state for scope verification"
-if [[ -f /tmp/docintel-app.json ]]; then
-  if ! "$PYTHON" -c "
+if grep -q '^      user_api_scopes:' resources/apps/analyst.app.yml 2>/dev/null; then
+  log "step 5c/5: verifying OBO scopes on $APP_NAME"
+  databricks apps get "$APP_NAME" --output json > /tmp/docintel-app.json || \
+    log "warn: could not fetch app state for scope verification"
+  if [[ -f /tmp/docintel-app.json ]]; then
+    "$PYTHON" -c "
 import json, sys
 app = json.load(open('/tmp/docintel-app.json'))
 scopes = set(app.get('user_api_scopes') or [])
-required = {'sql'}
+# Required for the OBO call chain: serving-endpoint invocation +
+# UC SQL via warehouse. iam.* defaults are also expected.
+required = {'serving.serving-endpoints', 'sql'}
 missing = required - scopes
 if missing:
     print(f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})', file=sys.stderr)
     sys.exit(1)
 print(f'OBO scopes intact: {sorted(scopes)}')
-"; then
-    log "warn: OBO scopes wiped — re-apply via 'databricks apps update $APP_NAME --user-api-scopes sql,iam.access-control:read,iam.current-user:read'"
+" || log "warn: OBO scopes wiped — re-apply via 'databricks apps update $APP_NAME --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read'"
   fi
+else
+  log "step 5c/5: user_api_scopes not declared (workspace feature off); skipping OBO scope check"
 fi
 
-# Schema-level UC grants (not declarative in DAB as of CLI 0.298 — skill
-# resource-permissions.md only lists volumes for native `grants:`).
+# UC grants (not declarative in DAB as of CLI 0.298 — skill resource-permissions.md
+# only lists volumes for native `grants:`). UC requires the chain:
+# USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE. Skipping USE_CATALOG silently
+# breaks queries even when schema-level grants look right.
 ANALYST_GROUP="${DOCINTEL_ANALYST_GROUP:-account users}"
-log "step 5d/5: applying schema grants for ${ANALYST_GROUP} on ${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}"
-databricks api post \
+log "step 5d/5: applying USE_CATALOG grant for ${ANALYST_GROUP} on ${DOCINTEL_CATALOG}"
+databricks api patch \
+  "/api/2.1/unity-catalog/permissions/CATALOG/${DOCINTEL_CATALOG}" \
+  --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_CATALOG\"]}]}" \
+  >/dev/null 2>&1 || \
+  log "warn: catalog USE_CATALOG grant failed (may already be applied; UC dedupes)"
+
+log "step 5e/5: applying schema grants for ${ANALYST_GROUP} on ${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}"
+databricks api patch \
   "/api/2.1/unity-catalog/permissions/SCHEMA/${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}" \
   --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" \
   >/dev/null 2>&1 || \

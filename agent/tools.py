@@ -11,6 +11,8 @@ from typing import Any
 
 from databricks.sdk import WorkspaceClient
 
+from agent._obo import user_workspace
+
 
 CATALOG = os.environ["DOCINTEL_CATALOG"]
 SCHEMA = os.environ["DOCINTEL_SCHEMA"]
@@ -19,7 +21,7 @@ WAREHOUSE_ID = os.environ["DOCINTEL_WAREHOUSE_ID"]
 
 def fetch_kpis(filename: str) -> dict[str, Any] | None:
     """Return the gold_filing_kpis row for one filing, or None if not present."""
-    w = WorkspaceClient()
+    w = user_workspace()
     statement = w.statement_execution.execute_statement(
         warehouse_id=WAREHOUSE_ID,
         statement=(
@@ -42,7 +44,7 @@ def fetch_kpis_for_companies(companies: list[str]) -> list[dict[str, Any]]:
     """
     if not companies:
         return []
-    w = WorkspaceClient()
+    w = user_workspace()
     clauses = []
     parameters: list[dict[str, str]] = []
     for i, c in enumerate(companies):

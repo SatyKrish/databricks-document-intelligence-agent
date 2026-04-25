@@ -19,12 +19,26 @@ resources:
             name: analyst-agent-${bundle.target}
             permission: CAN_QUERY
 
-      # Skill: databricks-apps/references/platform-guide.md §"Authentication".
-      # Without `sql` scope, `WorkspaceClient(token=user_token)` cannot run UC
-      # SQL queries on behalf of the user even if the user has UC SELECT.
-      # `iam.*` defaults are listed explicitly so we can spot if a future
-      # `bundle run` wipes them (skill §"Destructive Updates Warning").
-      user_api_scopes:
-        - sql
-        - iam.access-control:read
-        - iam.current-user:read
+      # OBO scopes (skill databricks-apps/references/platform-guide.md
+      # §"Authentication") require the workspace-level "Databricks Apps -
+      # user token passthrough" feature to be enabled. This workspace
+      # (organization 7474654018084939) does not have it enabled — DAB
+      # rejects the field with PERMISSION_DENIED at deploy time. Re-enable
+      # by uncommenting AFTER a workspace admin enables the feature.
+      #
+      # Required scopes for this app's OBO call chain:
+      #   serving.serving-endpoints   — invoke analyst-agent-${target} as the user
+      #   sql                         — agent's tools.py runs UC SQL via warehouse
+      #   iam.access-control:read     — default
+      #   iam.current-user:read       — default
+      #
+      # The agent's pyfunc additionally calls Vector Search and downstream
+      # serving endpoints; those resources/scopes are declared in MLflow's
+      # auth_policy at log_model time (see agent/log_and_register.py
+      # _auth_policy), not here.
+      #
+      # user_api_scopes:
+      #   - serving.serving-endpoints
+      #   - sql
+      #   - iam.access-control:read
+      #   - iam.current-user:read
