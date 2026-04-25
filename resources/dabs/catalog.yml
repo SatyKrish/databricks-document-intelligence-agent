@@ -1,0 +1,28 @@
+resources:
+  schemas:
+    docintel_schema:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+      comment: "10-K Analyst — Document Intelligence + Agent Bricks"
+
+  volumes:
+    raw_filings:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: raw_filings
+      volume_type: MANAGED
+      comment: "Drop-zone for raw 10-K PDFs. 90-day retention via retention.job.yml."
+
+  grants:
+    docintel_analyst_use:
+      securable_type: SCHEMA
+      securable_full_name: ${var.catalog}.${var.schema}
+      grants:
+        - principal: ${var.analyst_group}
+          privileges: [USE_SCHEMA, SELECT, EXECUTE]
+    docintel_analyst_volume:
+      securable_type: VOLUME
+      securable_full_name: ${var.catalog}.${var.schema}.raw_filings
+      grants:
+        - principal: ${var.analyst_group}
+          privileges: [READ_VOLUME, WRITE_VOLUME]

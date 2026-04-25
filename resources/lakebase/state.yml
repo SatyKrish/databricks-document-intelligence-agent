@@ -1,0 +1,15 @@
+resources:
+  database_instances:
+    docintel_state:
+      name: ${var.schema}_state
+      capacity: CU_1
+      node_count: 1
+      retention_window_in_days: 7
+      stopped: false
+
+  database_catalogs:
+    docintel_state_catalog:
+      name: ${var.schema}_state
+      database_instance_name: ${var.schema}_state
+      database_name: ${var.schema}_state
+      create_database_if_not_exists: true

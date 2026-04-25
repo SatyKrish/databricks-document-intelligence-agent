@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Filing KPI Extraction Schema",
+  "type": "object",
+  "required": ["company_name", "fiscal_year", "revenue", "top_risks", "extraction_confidence"],
+  "properties": {
+    "company_name": { "type": "string" },
+    "fiscal_year": { "type": "integer", "minimum": 1900, "maximum": 2100 },
+    "revenue": { "type": "number" },
+    "ebitda": { "type": ["number", "null"] },
+    "segment_revenue": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "revenue"],
+        "properties": {
+          "name": { "type": "string" },
+          "revenue": { "type": "number" }
+        }
+      }
+    },
+    "top_risks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 10
+    },
+    "extraction_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+  },
+  "additionalProperties": false
+}
