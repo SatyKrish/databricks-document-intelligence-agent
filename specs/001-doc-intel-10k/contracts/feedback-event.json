@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Feedback Event",
+  "description": "Body POSTed by the App to the agent's /feedback path. Persisted to lakebase.feedback.",
+  "type": "object",
+  "required": ["turn_id", "rating"],
+  "properties": {
+    "turn_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Echoes turn_id from the agent response being rated."
+    },
+    "rating": {
+      "type": "string",
+      "enum": ["up", "down"]
+    },
+    "comment": {
+      "type": ["string", "null"],
+      "maxLength": 2000
+    }
+  },
+  "additionalProperties": false
+}

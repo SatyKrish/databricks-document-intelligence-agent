@@ -1,0 +1,11 @@
+resources:
+  vector_search_endpoints:
+    docintel_vs:
+      name: docintel-${bundle.target}
+      endpoint_type: STANDARD
+
+# Index `${var.catalog}.${var.schema}.filings_summary_idx` is created and synced by
+# `jobs/index_refresh/sync_index.py` (see resources/jobs/index_refresh.job.yml).
+# Vector Search *indexes* are not a DAB-managed resource type as of CLI 0.298;
+# only endpoints are. The Python task creates the Delta-Sync index on first
+# run and triggers a sync on subsequent runs.

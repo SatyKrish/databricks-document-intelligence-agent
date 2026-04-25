@@ -1,0 +1,83 @@
+bundle:
+  name: doc-intel-10k
+
+include:
+  - resources/**/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog name
+    default: workspace
+  lakebase_instance:
+    description: Lakebase Postgres instance name (must be DNS-compliant — alphanumeric + hyphens only)
+    default: docintel-state
+  lakebase_stopped:
+    description: Whether the Lakebase Postgres instance should be stopped. Must be false on first creation (the API rejects creating directly into stopped state); flip to true after the instance exists if the env should be paused.
+    default: false
+  schema:
+    description: Schema for all 10-K Analyst resources
+    default: docintel_10k
+  service_principal_id:
+    description: Service Principal application ID for prod deploys
+    default: ""
+  warehouse_id:
+    description: SQL warehouse used by index-refresh and dashboards
+    lookup:
+      warehouse: Serverless Starter Warehouse
+  embedding_model_endpoint_name:
+    description: Mosaic AI embedding endpoint used by Vector Search
+    default: databricks-bge-large-en
+  foundation_model_endpoint_name:
+    description: Foundation model endpoint used by the agent for generation
+    default: databricks-meta-llama-3-3-70b-instruct
+  rerank_model_endpoint_name:
+    description: Mosaic AI re-ranker endpoint
+    default: databricks-bge-rerank-v2
+  quality_threshold:
+    description: Minimum quality_score (0-30) required for embed_eligible
+    default: 22
+  top_k:
+    description: Citations returned after re-rank
+    default: 5
+  max_pdf_bytes:
+    description: Reject filings larger than this many bytes (50 MB)
+    default: 52428800
+  analyst_group:
+    description: UC group granted SELECT/USE on the catalog/schema
+    default: account users
+
+targets:
+  dev:
+    default: true
+    workspace:
+      profile: DEFAULT
+      root_path: /Workspace/Users/dev@example.com/.bundle/${bundle.name}/dev
+    variables:
+      catalog: workspace
+      schema: docintel_10k_dev
+      lakebase_instance: docintel-dev-state-v3
+    resources:
+      pipelines:
+        doc_intel_pipeline:
+          development: true
+          # Dev override: triggered runs only, to avoid a continuously-running
+          # serverless cluster during smoke iterations. Prod inherits
+          # continuous: true from resources/foundation/doc_intel.pipeline.yml.
+          continuous: false
+
+  prod:
+    mode: production
+    workspace:
+      profile: DEFAULT
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/prod
+    # Constitution VI + skill databricks-dabs: production mode requires a
+    # service-principal `run_as`. `service_principal_id` defaults to "" so
+    # `bundle validate -t prod` fails loudly until set — that's the safety.
+    # Override via `--var service_principal_id=<sp-app-id>` on deploy.
+    run_as:
+      service_principal_name: ${var.service_principal_id}
+    variables:
+      catalog: workspace
+      schema: docintel_10k
+      lakebase_instance: docintel-prod-state
+      lakebase_stopped: false

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Filing KPI Extraction Schema",
+  "description": "JSON schema passed to ai_extract for one 10-K filing. Drives the structured columns of gold_filing_kpis.",
+  "type": "object",
+  "required": ["company_name", "fiscal_year", "revenue", "top_risks", "extraction_confidence"],
+  "properties": {
+    "company_name": {
+      "type": "string",
+      "description": "Issuing company legal name from the cover page."
+    },
+    "fiscal_year": {
+      "type": "integer",
+      "minimum": 1900,
+      "maximum": 2100,
+      "description": "Fiscal year covered by the filing."
+    },
+    "revenue": {
+      "type": "number",
+      "description": "Total revenue in USD for the fiscal year. From Statements of Operations."
+    },
+    "ebitda": {
+      "type": ["number", "null"],
+      "description": "EBITDA in USD if disclosed; null otherwise."
+    },
+    "segment_revenue": {
+      "type": "array",
+      "description": "Per-reporting-segment revenue if disclosed.",
+      "items": {
+        "type": "object",
+        "required": ["name", "revenue"],
+        "properties": {
+          "name": { "type": "string", "description": "Segment name." },
+          "revenue": { "type": "number", "description": "Segment revenue in USD." }
+        },
+        "additionalProperties": false
+      }
+    },
+    "top_risks": {
+      "type": "array",
+      "description": "Top risk factors disclosed, ranked by prominence in the Risk Factors section.",
+      "items": { "type": "string" },
+      "minItems": 0,
+      "maxItems": 10
+    },
+    "extraction_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Self-reported confidence from ai_extract."
+    }
+  },
+  "additionalProperties": false
+}

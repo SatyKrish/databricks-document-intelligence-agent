@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Endpoint Request",
+  "description": "Request body POSTed to the Mosaic AI Agent serving endpoint. AI Gateway adds identity headers automatically.",
+  "type": "object",
+  "required": ["question"],
+  "properties": {
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "Natural-language question from the analyst."
+    },
+    "top_k": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 25,
+      "default": 5,
+      "description": "Number of citations to return after re-ranking."
+    },
+    "company_filter": {
+      "type": ["string", "null"],
+      "description": "Optional company name to scope retrieval; null for cross-company."
+    },
+    "fiscal_year_filter": {
+      "type": ["integer", "null"],
+      "description": "Optional fiscal year filter."
+    },
+    "conversation_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "Echoed back; used to thread Lakebase conversation history."
+    }
+  },
+  "additionalProperties": false
+}

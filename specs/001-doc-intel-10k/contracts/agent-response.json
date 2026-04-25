@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Endpoint Response",
+  "description": "Response body returned by the Mosaic AI Agent serving endpoint.",
+  "type": "object",
+  "required": ["answer", "citations", "latency_ms", "retrieved_count", "agent_path"],
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "Grounded natural-language answer. Empty string with grounded=false if no sources."
+    },
+    "grounded": {
+      "type": "boolean",
+      "description": "True iff the answer is supported by at least one citation."
+    },
+    "citations": {
+      "type": "array",
+      "description": "Sources used to ground the answer. May be empty when grounded=false.",
+      "items": {
+        "type": "object",
+        "required": ["filename", "section_label", "score"],
+        "properties": {
+          "filename": { "type": "string", "description": "Source filing filename." },
+          "section_label": {
+            "type": "string",
+            "enum": ["MD&A", "Risk", "Financials", "Notes", "Other"],
+            "description": "Canonical section label."
+          },
+          "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Re-ranker score." },
+          "char_offset": { "type": ["integer", "null"], "description": "Optional offset into the section text." },
+          "snippet": { "type": ["string", "null"], "description": "Optional short snippet for hover preview." }
+        },
+        "additionalProperties": false
+      }
+    },
+    "latency_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Server-measured end-to-end latency in milliseconds."
+    },
+    "retrieved_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total candidates pulled before re-ranking trim."
+    },
+    "agent_path": {
+      "type": "string",
+      "enum": ["knowledge_assistant", "analyst", "supervisor"],
+      "description": "Which agent handled the request; logged for evaluation slicing."
+    },
+    "conversation_id": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "turn_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Lakebase query_logs row id; used by feedback POST."
+    }
+  },
+  "additionalProperties": false
+}

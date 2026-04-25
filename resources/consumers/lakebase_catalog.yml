@@ -1,0 +1,7 @@
+resources:
+  database_catalogs:
+    docintel_state_catalog:
+      name: ${var.lakebase_instance}
+      database_instance_name: ${var.lakebase_instance}
+      database_name: ${var.lakebase_instance}
+      create_database_if_not_exists: true

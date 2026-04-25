@@ -1,0 +1,36 @@
+resources:
+  pipelines:
+    doc_intel_pipeline:
+      name: doc-intel-10k-${bundle.target}
+
+      catalog: ${var.catalog}
+      target: ${var.schema}
+
+      libraries:
+        - file:
+            path: ../../pipelines/sql/01_bronze.sql
+        - file:
+            path: ../../pipelines/sql/02_silver_parse.sql
+        - file:
+            path: ../../pipelines/sql/03_gold_classify_extract.sql
+        - file:
+            path: ../../pipelines/sql/04_gold_quality.sql
+
+      configuration:
+        catalog: ${var.catalog}
+        schema: ${var.schema}
+        max_pdf_bytes: ${var.max_pdf_bytes}
+        quality_threshold: ${var.quality_threshold}
+
+      serverless: true
+      # File-arrival semantics (spec FR-001): continuous mode keeps the Auto
+      # Loader source running so new PDFs in the raw_filings volume are picked
+      # up automatically. Dev target overrides this to false in databricks.yml
+      # for cost control on smoke runs.
+      continuous: true
+      photon: true
+      channel: current
+
+      permissions:
+        - level: CAN_VIEW
+          group_name: ${var.analyst_group}

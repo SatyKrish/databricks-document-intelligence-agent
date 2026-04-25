@@ -1,0 +1,18 @@
+resources:
+  quality_monitors:
+    kpi_drift:
+      table_name: ${var.catalog}.${var.schema}.gold_filing_kpis
+      output_schema_name: ${var.catalog}.${var.schema}
+      assets_dir: /Shared/monitoring/${var.schema}
+      inference_log:
+        timestamp_col: extracted_at
+        granularities: ["1 day", "1 week"]
+        prediction_col: extraction_confidence
+        problem_type: PROBLEM_TYPE_REGRESSION
+        model_id_col: company_name
+      slicing_exprs:
+        - "company_name"
+        - "fiscal_year"
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"
+        timezone_id: UTC
