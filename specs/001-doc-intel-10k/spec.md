@@ -97,7 +97,7 @@ An analyst asks a multi-company question — e.g., "Compare segment revenue betw
 - **FR-009**: System MUST persist conversation history, query logs, and feedback in a transactional store suitable for fast reads/writes alongside the agent serving path.
 - **FR-010**: System MUST evaluate the agent against a curated eval set of 30 hand-authored questions (20 P2 single-filing, 10 P3 cross-company) checked into the repo at `evals/dataset.jsonl`, scoring each axis of CLEARS and gating promotion on per-axis thresholds: Correctness ≥ 0.8, Latency p95 ≤ 8s, Execution ≥ 0.95, Adherence ≥ 0.9, Relevance ≥ 0.8, Safety ≥ 0.99. Any failing axis MUST block promotion.
 - **FR-011**: System MUST expose a monitoring dashboard summarizing extraction drift on Gold and a usage dashboard summarizing conversation logs (top queries, content gaps).
-- **FR-012**: System MUST be deployable end-to-end (catalog/schema/volume, pipelines, vector index, agent endpoint, gateway, app, monitors, dashboards) via a single bundle deploy command; two environments (dev, prod) MUST be defined; no resource MAY be created outside the bundle.
+- **FR-012**: System MUST be deployable end-to-end (catalog/schema/volume, pipelines, vector index, agent endpoint, gateway, app, monitors, dashboards) via a single repeatable bring-up command; two environments (dev, prod) MUST be defined; no resource MAY be created outside the bundle. (See Clarifications session 2026-04-25 for the staged-deploy realization — first bring-up uses `./scripts/bootstrap-dev.sh` to handle chicken-egg dependencies between consumers and live data; steady-state deploys are a single `databricks bundle deploy`.)
 - **FR-013**: System MUST process duplicate uploads idempotently keyed on filename.
 - **FR-014**: System MUST gracefully report missing/ungrounded answers ("no source found") rather than hallucinating when retrieval returns no qualified results.
 
@@ -118,7 +118,7 @@ An analyst asks a multi-company question — e.g., "Compare segment revenue betw
 - **SC-002**: For curated single-filing eval questions (P2 category), the agent produces a cited, grounded answer that meets the per-axis evaluation thresholds on at least 80% of items.
 - **SC-003**: For curated cross-company eval questions (P3 category), the supervisor returns a consistent, cited aggregation that meets the per-axis evaluation thresholds on at least 70% of items.
 - **SC-004**: 100% of resources backing the deployed system are registered under the configured catalog/schema; zero resources are created outside the bundle (verified by `bundle validate` + workspace audit).
-- **SC-005**: A clean workspace + new analyst can stand up the entire stack with one bundle deploy command (no manual UI clicks) in under 30 minutes.
+- **SC-005**: A clean workspace + new analyst can stand up the entire stack with one repeatable command (no manual UI clicks) in under 30 minutes. The command is `./scripts/bootstrap-dev.sh` (which orchestrates a staged `bundle deploy`) for first bring-up, and plain `databricks bundle deploy` for every steady-state iteration thereafter.
 - **SC-006**: Filings that fail the quality rubric are excluded from retrieval 100% of the time and are visible in an audit log with score breakdown.
 - **SC-007**: Every agent answer in the App renders at least one citation when retrieved sources exist; when none exist, the agent explicitly states no grounded source rather than fabricating one.
 - **SC-008**: Re-uploading the same filename produces no duplicate KPI rows on 100% of attempts.

@@ -17,9 +17,15 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-        run: databricks bundle validate -t dev
+        run: databricks bundle validate --strict -t dev
 
   deploy-dev:
+    # CI assumes steady-state: the first-ever bring-up of a workspace must be
+    # done locally via `./scripts/bootstrap-dev.sh`, which handles the
+    # foundation/consumers staging and waits for Lakebase AVAILABLE. After
+    # that initial bring-up, every push to main runs a full bundle deploy
+    # against the now-existing resources — no temp-rename trick (DAB would
+    # plan to DELETE any resource that disappears from config).
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
@@ -38,19 +44,39 @@ jobs:
       - name: Install Databricks CLI
         run: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
       - name: Install Python deps
-        run: |
-          pip install -r agent/requirements.txt -r evals/requirements.txt
+        run: pip install -r agent/requirements.txt -r evals/requirements.txt
 
-      - name: Stage 1 — deploy foundation only (consumers temp-renamed out)
-        # Foundation has no data dependencies; deploys cleanly. Consumers are
-        # renamed to *.yml.skip so the bundle's resources/**/*.yml glob skips
-        # them. They get restored at the end of this step.
-        run: |
-          for f in resources/consumers/*.yml; do mv "$f" "$f.skip"; done
-          trap 'for f in resources/consumers/*.yml.skip; do mv "$f" "${f%.skip}"; done' EXIT
-          databricks bundle deploy -t dev
+      - name: Deploy bundle (full — consumers already exist in steady-state)
+        run: databricks bundle deploy -t dev
 
-      - name: Stage 1.5 — produce data
+      - name: Wait for Lakebase instance to be AVAILABLE
+        # Lakebase already exists in steady-state but a config change can
+        # transition it back through provisioning; the catalog/app bindings
+        # need it AVAILABLE before the next bundle run touches them.
+        run: |
+          python -c "
+import json, os, sys, time, subprocess
+name = os.environ.get('LAKEBASE_NAME') or 'docintel-dev-state-v3'
+deadline = time.time() + 600
+while True:
+    out = subprocess.run(['databricks','api','get','/api/2.0/database/instances','--output','json'],
+                         capture_output=True, text=True)
+    try:
+        d = json.loads(out.stdout)
+    except Exception:
+        d = {}
+    state = next((i.get('state') for i in d.get('database_instances',[]) if i.get('name')==name), 'UNKNOWN')
+    print(f'lakebase state: {state}')
+    if state == 'AVAILABLE':
+        sys.exit(0)
+    if time.time() >= deadline:
+        sys.exit(f'Lakebase {name} did not reach AVAILABLE within 600s (state={state})')
+    time.sleep(15)
+"
+        env:
+          LAKEBASE_NAME: ${{ vars.DOCINTEL_LAKEBASE_NAME || 'docintel-dev-state-v3' }}
+
+      - name: Refresh data — upload samples, run pipeline, register new model version
         run: |
           for f in samples/*_10K_*.pdf; do
             databricks fs cp "$f" \
@@ -59,12 +85,11 @@ jobs:
           done
           databricks bundle run -t dev doc_intel_pipeline
           python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
-          python agent/log_and_register.py --target dev
+          # --serving-endpoint repoints the existing endpoint to the new
+          # model version in-place (steady-state idempotent operation).
+          python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
 
-      - name: Stage 2 — deploy full bundle (consumers attach to live foundation)
-        run: databricks bundle deploy -t dev
-
-      - name: Apply post-deploy UC grants (catalog + schema; not DAB-supported)
+      - name: Apply UC grants (catalog + schema; not DAB-supported)
         # UC requires the full chain: USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE.
         # Defaults to "account users" so CI does not silently skip when the
         # GitHub variable is unset.
@@ -78,7 +103,7 @@ jobs:
             "/api/2.1/unity-catalog/permissions/SCHEMA/${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}" \
             --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" || true
 
-      - name: Apply app config + restart (canonical apps deploy command)
+      - name: Apply app config + restart
         # Databricks Apps deploy docs:
         # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy
         # `bundle deploy` alone uploads code but doesn't apply config/restart.
@@ -86,10 +111,8 @@ jobs:
 
       - name: Verify OBO scopes survived deploy
         # `bundle run` may wipe user_api_scopes (documented destructive-update
-        # behavior — see Databricks Apps deploy docs). Fail loudly so we
-        # re-apply. Asserts the full set required by the agent's call chain
-        # (serving + sql), not just sql. Skipped when user_api_scopes are
-        # not declared (workspace feature off).
+        # behavior). Fail loudly so we re-apply. Skipped when user_api_scopes
+        # are not declared (workspace feature off).
         run: |
           if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml; then
             databricks apps get doc-intel-analyst-dev --output json > /tmp/app.json

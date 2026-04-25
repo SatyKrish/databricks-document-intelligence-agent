@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# Bootstrap a fresh dev workspace end-to-end via STAGED deploys.
+# Bootstrap a dev workspace end-to-end.
 #
-# Architecture: resources are split into two stages (resources/foundation/
-# and resources/consumers/). Foundation has no data dependencies; consumers
-# need foundation to be running and producing data (registered model version,
-# populated KPI table, AVAILABLE Lakebase instance).
+# Two modes, auto-detected:
 #
-# DAB doesn't natively support partial deploys, so stage 1 temporarily renames
-# resources/consumers/*.yml → *.yml.skip so the bundle's `resources/**/*.yml`
-# glob skips them. A trap restores the names on any exit path. Stage 2 deploys
-# the full bundle (foundation idempotent, consumers create cleanly).
+#   FIRST DEPLOY (no serving endpoint yet)
+#     resources/ has chicken-egg dependencies: consumers (serving endpoint,
+#     monitor, app, lakebase catalog, vs endpoint) need foundation data
+#     (registered model, populated KPI table, AVAILABLE Lakebase). DAB
+#     deploys everything in one shot, so we stage:
+#       1. Hide resources/consumers/*.yml → *.yml.skip; bundle deploy
+#          touches only foundation. Trap restores on any exit.
+#       2. Produce data: samples → pipeline → wait for KPIs → register
+#          model → wait for Lakebase AVAILABLE.
+#       3. Restore consumer YAMLs; bundle deploy full bundle. All deps
+#          satisfied; consumers create cleanly.
 #
-# Steps:
-#   0. Detect & clean known orphans from prior failed runs.
-#   1. Stage 1 deploy: foundation only.
-#   2. Produce data: upload samples, run pipeline, register model, wait for
-#      Lakebase to be AVAILABLE.
-#   3. Stage 2 deploy: full bundle (consumers attach to live foundation).
-#   4. Apply app config + restart.
-#   5. UC grants chain (USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE).
-#   6. Smoke check.
+#   STEADY STATE (consumers already exist)
+#     The temp-rename trick is unsafe here: DAB tracks resource state and
+#     would plan to DELETE any resource that disappears from config (per
+#     Databricks bundle docs — removed config = removed workspace resource).
+#     So in steady state we do a normal full bundle deploy and refresh data
+#     in place: samples → pipeline → register a new model version → repoint
+#     the serving endpoint via _promote_serving_endpoint.
+#
+# Common to both: bundle run analyst_app (apply config + restart),
+# UC grants chain, smoke check.
 #
 # Required env vars:
 #   DOCINTEL_CATALOG       e.g. workspace
@@ -27,10 +32,14 @@
 #   DOCINTEL_WAREHOUSE_ID  SQL warehouse id (used by wait_for_kpis + smoke)
 #
 # Optional:
-#   DOCINTEL_TARGET           bundle target (default: dev)
-#   DOCINTEL_ANALYST_GROUP    UC group for grants (default: "account users")
-#   DOCINTEL_WAIT_SECONDS     poll timeout for KPI table (default: 600)
-#   DOCINTEL_LAKEBASE_TIMEOUT poll timeout for Lakebase (default: 600)
+#   DOCINTEL_TARGET            bundle target (default: dev)
+#   DOCINTEL_ANALYST_GROUP     UC group for grants (default: "account users")
+#   DOCINTEL_WAIT_SECONDS      poll timeout for KPI table (default: 600)
+#   DOCINTEL_LAKEBASE_TIMEOUT  poll timeout for Lakebase (default: 600)
+#   DOCINTEL_FORCE_FIRST       set to 1 to force the staged first-deploy path
+#   DOCINTEL_FORCE_LOCK        set to 1 to pass --force-lock (use ONLY when a
+#                              prior deploy crashed and left a stale lock —
+#                              not a normal-flow flag).
 
 set -euo pipefail
 
@@ -51,6 +60,12 @@ KPI_TABLE="${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}.gold_filing_kpis"
 VOLUME_PATH="dbfs:/Volumes/${DOCINTEL_CATALOG}/${DOCINTEL_SCHEMA}/raw_filings"
 PIPELINE_KEY="doc_intel_pipeline"
 
+DEPLOY_FLAGS=()
+if [[ "${DOCINTEL_FORCE_LOCK:-0}" == "1" ]]; then
+  log "DOCINTEL_FORCE_LOCK=1 — passing --force-lock to bundle deploy (use only for stale-lock recovery)"
+  DEPLOY_FLAGS+=(--force-lock)
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
@@ -63,21 +78,43 @@ else
   die "no python interpreter found (.venv/bin/python or python3)"
 fi
 
-# ─── Step 0: orphan detection + cleanup ─────────────────────────────────────
-# Remove leftover consumer resources from prior partial runs that would block
-# stage 2's clean creates with RESOURCE_ALREADY_EXISTS. Strict checks: only
-# delete if the resource is in a known-broken state.
+# ─── First-deploy detection ──────────────────────────────────────────────────
+# A serving endpoint with a populated config means consumers were deployed
+# previously (or the deploy got partway). Treat anything else as first deploy.
+detect_mode() {
+  if [[ "${DOCINTEL_FORCE_FIRST:-0}" == "1" ]]; then
+    echo "first"
+    return
+  fi
+  if ep_state=$(databricks api get "/api/2.0/serving-endpoints/${ENDPOINT}" --output json 2>/dev/null); then
+    has_entity=$("$PYTHON" -c "
+import json, sys
+ep = json.loads(sys.argv[1])
+served = (ep.get('config') or {}).get('served_entities') or (ep.get('config') or {}).get('served_models') or []
+print('yes' if served else 'no')
+" "$ep_state" 2>/dev/null || echo "no")
+    if [[ "$has_entity" == "yes" ]]; then
+      echo "steady"
+      return
+    fi
+  fi
+  echo "first"
+}
+
+MODE=$(detect_mode)
+log "detected mode: $MODE"
+
+# ─── Step 0: orphan detection + cleanup (always run) ────────────────────────
 log "step 0/6: detecting orphans from prior failed runs"
 
-# Malformed serving endpoint: exists but has no served entities (created in a
-# stage-1 deploy that ran before the model version existed).
+# Malformed serving endpoint: exists but has no served entities.
 if ep_state=$(databricks api get "/api/2.0/serving-endpoints/${ENDPOINT}" --output json 2>/dev/null); then
   if "$PYTHON" -c "
 import json, sys
 ep = json.loads(sys.argv[1])
 served = (ep.get('config') or {}).get('served_entities') or (ep.get('config') or {}).get('served_models') or []
 if not served:
-    print('orphan: empty config', file=sys.stderr); sys.exit(0)
+    sys.exit(0)
 sys.exit(1)
 " "$ep_state" 2>/dev/null; then
     log "  → deleting malformed serving endpoint $ENDPOINT (no served entities)"
@@ -86,8 +123,7 @@ sys.exit(1)
   fi
 fi
 
-# Lakebase soft-delete name conflict: if the desired instance name appears in
-# DELETING state, bump var.lakebase_instance to the next free suffix.
+# Lakebase soft-delete name conflict.
 LAKEBASE_NAME=$("$PYTHON" -c "
 import yaml, sys
 with open('databricks.yml') as f:
@@ -112,68 +148,12 @@ for i in d.get('database_instances', []):
   fi
 fi
 
-# ─── Step 1: stage-1 deploy (foundation only) ───────────────────────────────
-log "step 1/6: stage-1 deploy (foundation only)"
-
-# Hide consumer resources from the bundle by suffixing them. Trap restores
-# them on any exit path so a crash here doesn't leave the repo in a half-
-# renamed state.
-shopt -s nullglob
-consumer_files=(resources/consumers/*.yml)
-shopt -u nullglob
-
-restore_consumers() {
-  local f
-  for f in resources/consumers/*.yml.skip; do
-    [[ -f "$f" ]] || continue
-    mv "$f" "${f%.skip}"
-  done
-}
-trap restore_consumers EXIT INT TERM
-
-for f in "${consumer_files[@]}"; do
-  mv "$f" "$f.skip"
-done
-
-databricks bundle deploy -t "$TARGET" --force-lock || \
-  die "stage-1 deploy failed (foundation should be self-contained — investigate)"
-
-# Restore consumer YAMLs so stage 2 can deploy them.
-restore_consumers
-trap - EXIT INT TERM
-
-# ─── Step 2: produce data ───────────────────────────────────────────────────
-log "step 2/6: producing data — uploading samples, running pipeline, registering model"
-
-shopt -s nullglob
-sample_pdfs=(samples/*_10K_*.pdf)
-shopt -u nullglob
-if (( ${#sample_pdfs[@]} == 0 )); then
-  log "  no PDFs in samples/; run samples/synthesize.py to regenerate"
-else
-  for pdf in "${sample_pdfs[@]}"; do
-    databricks fs cp "$pdf" "$VOLUME_PATH/" --overwrite >/dev/null 2>&1 || \
-      log "  warn: fs cp $pdf failed, continuing"
-  done
-fi
-
-databricks bundle run -t "$TARGET" "$PIPELINE_KEY" || \
-  die "pipeline run failed — inspect SDP UI before retrying"
-
-"$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
-  die "timed out waiting for $KPI_TABLE"
-
-# Register the agent model (no --serving-endpoint — endpoint doesn't exist
-# until stage 2 deploy).
-"$PYTHON" agent/log_and_register.py --target "$TARGET" || \
-  die "agent registration failed"
-
-# Wait for Lakebase to reach AVAILABLE so stage 2's catalog/app bind cleanly.
-log "  waiting up to ${LAKEBASE_TIMEOUT}s for Lakebase $LAKEBASE_NAME state=AVAILABLE"
-deadline=$(( $(date +%s) + LAKEBASE_TIMEOUT ))
-while :; do
-  state=$(databricks api get /api/2.0/database/instances --output json 2>/dev/null | \
-    "$PYTHON" -c "
+wait_for_lakebase_available() {
+  log "  waiting up to ${LAKEBASE_TIMEOUT}s for Lakebase $LAKEBASE_NAME state=AVAILABLE"
+  deadline=$(( $(date +%s) + LAKEBASE_TIMEOUT ))
+  while :; do
+    state=$(databricks api get /api/2.0/database/instances --output json 2>/dev/null | \
+      "$PYTHON" -c "
 import json, sys
 d = json.load(sys.stdin)
 for i in d.get('database_instances', []):
@@ -181,27 +161,99 @@ for i in d.get('database_instances', []):
         print(i.get('state', 'UNKNOWN'))
         break
 " 2>/dev/null || echo "UNKNOWN")
-  if [[ "$state" == "AVAILABLE" ]]; then
-    log "  → Lakebase $LAKEBASE_NAME is AVAILABLE"
-    break
-  fi
-  if (( $(date +%s) >= deadline )); then
-    die "Lakebase $LAKEBASE_NAME did not reach AVAILABLE within ${LAKEBASE_TIMEOUT}s (state=$state)"
-  fi
-  sleep 15
-done
+    if [[ "$state" == "AVAILABLE" ]]; then
+      log "  → Lakebase $LAKEBASE_NAME is AVAILABLE"
+      return 0
+    fi
+    if (( $(date +%s) >= deadline )); then
+      die "Lakebase $LAKEBASE_NAME did not reach AVAILABLE within ${LAKEBASE_TIMEOUT}s (state=$state)"
+    fi
+    sleep 15
+  done
+}
 
-# ─── Step 3: stage-2 deploy (full bundle) ───────────────────────────────────
-log "step 3/6: stage-2 deploy (full bundle — consumers join the foundation)"
-databricks bundle deploy -t "$TARGET" --force-lock || \
-  die "stage-2 deploy failed — should not happen if data is in place; check logs"
+upload_samples() {
+  log "  uploading synthetic samples to $VOLUME_PATH"
+  shopt -s nullglob
+  local sample_pdfs=(samples/*_10K_*.pdf)
+  shopt -u nullglob
+  if (( ${#sample_pdfs[@]} == 0 )); then
+    log "    no PDFs in samples/; run samples/synthesize.py to regenerate"
+    return
+  fi
+  for pdf in "${sample_pdfs[@]}"; do
+    databricks fs cp "$pdf" "$VOLUME_PATH/" --overwrite >/dev/null 2>&1 || \
+      log "    warn: fs cp $pdf failed, continuing"
+  done
+}
 
-# ─── Step 4: app run ────────────────────────────────────────────────────────
+if [[ "$MODE" == "first" ]]; then
+  # ─── First-deploy path: staged ─────────────────────────────────────────────
+  log "step 1/6: stage-1 deploy (foundation only — first deploy)"
+
+  # Hide consumer resources from the bundle. Trap restores on any exit.
+  shopt -s nullglob
+  consumer_files=(resources/consumers/*.yml)
+  shopt -u nullglob
+
+  restore_consumers() {
+    local f
+    for f in resources/consumers/*.yml.skip; do
+      [[ -f "$f" ]] || continue
+      mv "$f" "${f%.skip}"
+    done
+  }
+  trap restore_consumers EXIT INT TERM
+
+  for f in "${consumer_files[@]}"; do
+    mv "$f" "$f.skip"
+  done
+
+  databricks bundle deploy -t "$TARGET" "${DEPLOY_FLAGS[@]}" || \
+    die "stage-1 deploy failed (foundation should be self-contained — investigate)"
+
+  restore_consumers
+  trap - EXIT INT TERM
+
+  log "step 2/6: producing data"
+  upload_samples
+  databricks bundle run -t "$TARGET" "$PIPELINE_KEY" || \
+    die "pipeline run failed — inspect SDP UI before retrying"
+  "$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
+    die "timed out waiting for $KPI_TABLE"
+  "$PYTHON" agent/log_and_register.py --target "$TARGET" || \
+    die "agent registration failed"
+  wait_for_lakebase_available
+
+  log "step 3/6: stage-2 deploy (full bundle — consumers join the foundation)"
+  databricks bundle deploy -t "$TARGET" "${DEPLOY_FLAGS[@]}" || \
+    die "stage-2 deploy failed; check logs"
+
+else
+  # ─── Steady-state path: single full deploy + in-place data refresh ────────
+  log "step 1/6: full bundle deploy (steady-state — consumers already exist)"
+  databricks bundle deploy -t "$TARGET" "${DEPLOY_FLAGS[@]}" || \
+    die "bundle deploy failed; if a prior deploy was interrupted, set DOCINTEL_FORCE_LOCK=1 and retry"
+
+  log "step 2/6: refreshing data + repointing serving endpoint"
+  upload_samples
+  databricks bundle run -t "$TARGET" "$PIPELINE_KEY" || \
+    die "pipeline run failed — inspect SDP UI before retrying"
+  "$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
+    die "timed out waiting for $KPI_TABLE"
+  # Register a new model version and update the served entity in-place.
+  "$PYTHON" agent/log_and_register.py --target "$TARGET" --serving-endpoint "$ENDPOINT" || \
+    die "agent registration failed"
+
+  log "step 3/6: skipped (no second deploy needed in steady-state)"
+fi
+
+# ─── Step 4: app run (both paths) ────────────────────────────────────────────
 log "step 4/6: applying app config + restart"
 databricks bundle run -t "$TARGET" analyst_app || \
   log "  warn: analyst_app run failed; retry manually with 'databricks bundle run -t $TARGET analyst_app'"
 
-# ─── Step 5: UC grants chain ────────────────────────────────────────────────
+# ─── Step 5: UC grants (idempotent) ──────────────────────────────────────────
 log "step 5/6: applying UC grants for ${ANALYST_GROUP} (catalog → schema)"
 databricks api patch \
   "/api/2.1/unity-catalog/permissions/CATALOG/${DOCINTEL_CATALOG}" \
@@ -213,8 +265,7 @@ databricks api patch \
   --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" \
   >/dev/null 2>&1 || log "  warn: schema grants failed (may already be applied; UC dedupes)"
 
-# Optional OBO scope verification: only if user_api_scopes is declared (the
-# workspace must have user-token-passthrough enabled).
+# OBO scope verification (only meaningful when user_api_scopes is declared).
 if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml 2>/dev/null; then
   log "  verifying OBO scopes on $APP_NAME"
   if app_state=$(databricks apps get "$APP_NAME" --output json 2>/dev/null); then
@@ -244,7 +295,7 @@ else
   log ""
 fi
 
-# ─── Step 6: smoke check ────────────────────────────────────────────────────
+# ─── Step 6: smoke check ─────────────────────────────────────────────────────
 log "step 6/6: smoke check on $ENDPOINT"
 if smoke=$("$PYTHON" -c "
 from databricks.sdk import WorkspaceClient
@@ -261,6 +312,7 @@ else
 fi
 
 log "done."
+log "  mode:        $MODE"
 log "  endpoint:    $ENDPOINT"
 log "  KPI table:   $KPI_TABLE"
 log "  app:         $APP_NAME"

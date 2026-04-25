@@ -476,24 +476,49 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-dev.sh`. Resou
        └── lakebase_catalog.yml  (needs instance AVAILABLE)
 ```
 
-Bootstrap flow (every step succeeds cleanly — no "errors tolerated"):
+**The bootstrap script auto-detects which mode to run** by checking whether the agent serving endpoint already has a populated config:
 
 ```
-   Step 0 ▸ orphan detection (delete leftover endpoints / catch
-            soft-deleted Lakebase name conflicts)
-   Step 1 ▸ stage-1 deploy: foundation only.
-            consumer YAMLs temp-renamed to *.yml.skip so the bundle
-            glob excludes them. Trap restores on any exit.
-   Step 2 ▸ produce data: upload samples, run pipeline, register
-            model, wait for Lakebase state=AVAILABLE.
-   Step 3 ▸ stage-2 deploy: full bundle. Foundation idempotent;
-            consumers attach to the live foundation.
-   Step 4 ▸ bundle run analyst_app  (apply config + restart)
-   Step 5 ▸ UC grants: USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE
-   Step 6 ▸ smoke query
+                       does analyst-agent-${target} have served entities?
+                                     │
+                          no ◀───────┴───────▶ yes
+                          │                     │
+                          ▼                     ▼
+                ┌──────────────────┐   ┌──────────────────┐
+                │  FIRST-DEPLOY    │   │  STEADY-STATE    │
+                │  (staged)        │   │  (full deploy)   │
+                ├──────────────────┤   ├──────────────────┤
+                │ 1. temp-rename   │   │ 1. bundle deploy │
+                │    consumers/*   │   │    (full bundle) │
+                │    .yml.skip     │   │                  │
+                │ 2. bundle deploy │   │ 2. refresh data: │
+                │    (foundation)  │   │    upload, run   │
+                │ 3. produce data: │   │    pipeline,     │
+                │    upload, run,  │   │    register new  │
+                │    register      │   │    model version │
+                │    model         │   │    + repoint     │
+                │ 4. wait Lakebase │   │    serving in-   │
+                │    AVAILABLE     │   │    place         │
+                │ 5. restore yamls │   │                  │
+                │ 6. bundle deploy │   │                  │
+                │    (full bundle) │   │                  │
+                └────────┬─────────┘   └────────┬─────────┘
+                         │                       │
+                         └───────────┬───────────┘
+                                     ▼
+                         ┌──────────────────────────┐
+                         │  Common to both:         │
+                         │  • bundle run analyst_app│
+                         │  • UC grants chain       │
+                         │  • smoke check           │
+                         └──────────────────────────┘
 ```
 
-After bring-up, steady-state CI uses the same staged shape so no orphans accumulate. Full breakdown in [`docs/runbook.md`](./docs/runbook.md).
+**Why two modes?** DAB tracks resource state; if you run the temp-rename trick against an *existing* deployment, DAB sees the consumer YAMLs as removed and plans to **delete** the serving endpoint, app, monitor, etc. Safe-ish on a fresh workspace; destructive in steady-state. The script detects mode and does the right thing.
+
+CI (`.github/workflows/deploy.yml`) assumes steady-state — the first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-dev.sh`. After that, every push to `main` runs the steady-state path: full `bundle deploy` → refresh data → repoint serving endpoint → grants → CLEARS gate.
+
+Full breakdown in [`docs/runbook.md`](./docs/runbook.md).
 
 ---
 
