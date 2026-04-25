@@ -1,4 +1,4 @@
-# Production Readiness
+# Production Readiness — Databricks Document Intelligence Agent
 
 This project is open-sourced as a Databricks reference implementation. Treat it as production-ready only after the evidence below is collected in the target workspace.
 

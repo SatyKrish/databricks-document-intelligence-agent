@@ -1,4 +1,4 @@
-# Contributing
+# Contributing to Databricks Document Intelligence Agent
 
 This is a learning-oriented reference implementation. Bug reports, doc fixes, and pattern improvements are all welcome.
 

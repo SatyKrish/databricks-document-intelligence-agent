@@ -1,4 +1,4 @@
-# Validation Guide
+# Validation Guide — Databricks Document Intelligence Agent
 
 Use this guide to prove the reference implementation works in a Databricks workspace.
 

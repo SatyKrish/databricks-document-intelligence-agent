@@ -1,4 +1,4 @@
-# Security
+# Security — Databricks Document Intelligence Agent
 
 ## Supported Security Posture
 

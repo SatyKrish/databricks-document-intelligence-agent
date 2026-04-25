@@ -4,7 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-Active feature: **001-doc-intel-10k** — Databricks Document Intelligence + Agent Bricks 10-K Analyst.
+**Databricks Document Intelligence Agent — Reference Implementation.**
+Active feature: **001-doc-intel-10k** — demonstrated on synthetic SEC 10-K filings.
 Drives a Bronze→Silver→Gold pipeline (`ai_parse_document` / `ai_classify` / `ai_extract`),
 Mosaic AI Vector Search index, agent endpoint behind AI Gateway, Streamlit App on Databricks Apps,
 Lakebase state, Lakehouse Monitoring, and an MLflow CLEARS eval gate — all in one DAB.
