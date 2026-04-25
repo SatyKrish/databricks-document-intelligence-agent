@@ -415,7 +415,7 @@ When you read `specs/001-doc-intel-10k/plan.md` you'll see a "Constitution Check
 
 ### Pillar 2 — Databricks Asset Bundles + the Claude Code skill suite
 
-[**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe the entire workspace state as YAML. One root `databricks.yml` declares variables and targets (`dev`, `prod`); `resources/**/*.yml` declares each resource (pipeline, jobs, vector index, serving endpoint, app, monitor, dashboard, Lakebase). `databricks bundle deploy -t dev` reconciles workspace state to YAML.
+[**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe most of the workspace state as YAML. One root `databricks.yml` declares variables and targets (`dev`, `prod`); `resources/**/*.yml` declares each resource (pipeline, jobs, Vector Search endpoint, index-refresh job, serving endpoint, app, monitor, dashboard, Lakebase instance + catalog). `databricks bundle deploy -t dev` reconciles workspace state to YAML. The two non-DAB-managed pieces — the Vector Search **index** itself and the registered **model version** — are produced at runtime by `jobs/index_refresh/sync_index.py` and `agent/log_and_register.py` respectively, which the bootstrap script orchestrates.
 
 This repo was built with Databricks-specific Claude Code skill bundles. Those bundles are distributed by Databricks via the CLI / Claude Code plugin channel and **are not vendored in this open-source tree** — install them locally if you have access, or reference the canonical Databricks docs (mapping in [`CONTRIBUTING.md`](./CONTRIBUTING.md)).
 
