@@ -66,3 +66,9 @@ def test_supervisor_with_no_data_falls_back_to_no_source() -> None:
 
     assert out["grounded"] is False
     assert out["citations"] == []
+
+
+def test_section_terms_are_not_extracted_as_companies() -> None:
+    from agent import supervisor
+
+    assert supervisor._extract_companies("Compare Risk and MD&A coverage between filings") == []

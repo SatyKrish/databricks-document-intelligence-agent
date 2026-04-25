@@ -61,7 +61,7 @@ Failures are logged as a JSON list under the run tag `failures`. The script exit
 | Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
 | Agent endpoint 401 | AI Gateway identity passthrough mis-config | Verify `ai_gateway` block in `resources/serving/agent.serving.yml` |
 | CLEARS Latency axis fails | Re-rank window too large | Reduce candidate window in `agent/retrieval.py` from 25 to 15 |
-| App errors connecting to Lakebase | DSN secret missing | Check `app/app.yaml` env binding and Databricks Apps secret store |
+| App errors connecting to Lakebase | Database resource binding missing Postgres env vars | Check the `docintel-lakebase` resource binding and `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` in the App runtime |
 
 ## CLEARS thresholds
 
@@ -97,15 +97,14 @@ Latency p95:     <ms>
 The bundle has three chicken-egg dependencies that a single `bundle deploy` cannot
 resolve on a fresh workspace. Each needs a phase-2 step after a prior side effect:
 
-1. **Model Serving endpoint references the agent model alias `@dev`**
-   - `resources/serving/agent.serving.yml` sets `entity_version: "@${bundle.target}"`.
-   - This fails with `Entity version must be a number` until the model is logged
-     and the alias assigned (`agent/log_and_register.py --target dev`).
-   - **Fix**: split deploy. (a) Run a one-time bootstrap that calls
-     `log_and_register.py` against an empty pipeline run, OR (b) change the
-     yml to a literal version after the first registration. The GH Actions
-     workflow already orders register before serving — local single-shot deploys
-     need the same split.
+1. **Model Serving endpoint references a concrete agent model version**
+   - `resources/serving/agent.serving.yml` must contain a numeric placeholder
+     because DAB serving config rejects UC alias syntax in this workspace.
+   - CI registers a fresh model version and then calls
+     `agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev`
+     to update the served entity to the new version.
+   - **Fix**: for local deploys, run the same registration command after bundle
+     deploy, or bootstrap the endpoint once and let the script advance it.
 
 2. **Lakehouse Monitor references `gold_filing_kpis` which the pipeline must create first**
    - `resources/monitors/kpi_drift.yml` attaches to a table that doesn't exist

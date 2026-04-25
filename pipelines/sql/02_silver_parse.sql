@@ -3,18 +3,24 @@
 
 CREATE OR REFRESH STREAMING TABLE silver_parsed_filings;
 
+CREATE TEMPORARY VIEW silver_with_parsed AS
+SELECT
+  filename,
+  ai_parse_document(content)                   AS parsed
+FROM STREAM(bronze_filings);
+
 CREATE TEMPORARY VIEW silver_parsed_filings_changes AS
 SELECT
   filename,
-  ai_parse_document(content)                   AS parsed,
+  parsed,
   current_timestamp()                          AS parsed_at,
   CASE
-    WHEN ai_parse_document(content) IS NULL THEN 'error'
-    WHEN try_variant_get(ai_parse_document(content), '$.metadata.partial', 'boolean') = TRUE THEN 'partial'
+    WHEN parsed IS NULL THEN 'error'
+    WHEN try_variant_get(parsed, '$.metadata.partial', 'boolean') = TRUE THEN 'partial'
     ELSE 'ok'
   END                                          AS parse_status,
-  try_variant_get(ai_parse_document(content), '$.metadata.error', 'string') AS parse_error
-FROM STREAM(bronze_filings);
+  try_variant_get(parsed, '$.metadata.error', 'string') AS parse_error
+FROM silver_with_parsed;
 
 CREATE FLOW silver_parsed_filings_flow AS AUTO CDC INTO silver_parsed_filings
 FROM STREAM(silver_parsed_filings_changes)

@@ -11,6 +11,9 @@ variables:
   lakebase_instance:
     description: Lakebase Postgres instance name (must be DNS-compliant — alphanumeric + hyphens only)
     default: docintel-state
+  lakebase_stopped:
+    description: Whether the Lakebase Postgres instance should be stopped after deploy
+    default: true
   schema:
     description: Schema for all 10-K Analyst resources
     default: docintel_10k
@@ -72,3 +75,4 @@ targets:
       catalog: workspace
       schema: docintel_10k
       lakebase_instance: docintel-prod-state
+      lakebase_stopped: false

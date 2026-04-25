@@ -29,12 +29,25 @@ def _user_email() -> str:
 
 
 def _query_agent(question: str, conversation_id: str) -> dict:
-    out = _client().serving_endpoints.query(
-        name=AGENT_ENDPOINT,
-        inputs=[{"question": question, "conversation_id": conversation_id, "top_k": 5}],
-    )
-    raw = out.predictions if hasattr(out, "predictions") else out["predictions"]
-    return raw[0] if isinstance(raw, list) else raw
+    try:
+        out = _client().serving_endpoints.query(
+            name=AGENT_ENDPOINT,
+            inputs=[{"question": question, "conversation_id": conversation_id, "top_k": 5}],
+        )
+        raw = out.predictions if hasattr(out, "predictions") else out["predictions"]
+        return raw[0] if isinstance(raw, list) else raw
+    except Exception as exc:
+        return {
+            "answer": "The analyst agent is unavailable right now. Please try again.",
+            "grounded": False,
+            "citations": [],
+            "latency_ms": 0,
+            "retrieved_count": 0,
+            "agent_path": "app_error",
+            "conversation_id": conversation_id,
+            "turn_id": str(uuid.uuid4()),
+            "error": str(exc),
+        }
 
 
 def _ensure_session() -> tuple[str, str]:

@@ -5,7 +5,7 @@ resources:
       capacity: CU_1
       node_count: 1
       retention_window_in_days: 7
-      stopped: false
+      stopped: ${var.lakebase_stopped}
 
   database_catalogs:
     docintel_state_catalog:

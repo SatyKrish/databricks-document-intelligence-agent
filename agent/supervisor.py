@@ -26,6 +26,8 @@ _STOP = {
     "vs", "versus", "against", "ebitda", "revenue", "fiscal", "year", "filing",
     "filings", "10-k", "10k", "ten-k", "tenk", "company", "companies", "by",
     "in", "on", "of", "to", "from",
+    "mda", "md&a", "risk", "risks", "financials", "notes", "note", "section",
+    "sections", "item", "items", "management", "discussion", "analysis",
 }
 
 # Map question keywords -> column template + KPI extractor.
@@ -161,7 +163,7 @@ def _narrative(
         if not cits:
             parts.append(f"**{company}** — no grounded source for this question in the indexed corpus.")
             continue
-        snippet = next((c.snippet for c in cits if c.snippet), None) or ""
+        snippet = next((c.snippet for c in cits if c.snippet), None) or "no detail available in retrieved snippets."
         parts.append(f"**{company}** — {snippet}")
     return "\n\n".join(parts)
 

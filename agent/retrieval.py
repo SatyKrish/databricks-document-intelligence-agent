@@ -9,6 +9,7 @@ pipelines/sql/04_gold_quality.sql).
 from __future__ import annotations
 
 import os
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +24,7 @@ ENDPOINT = os.environ.get("DOCINTEL_VS_ENDPOINT", f"docintel-{os.environ.get('DO
 RERANK_ENDPOINT = os.environ.get("DOCINTEL_RERANK_ENDPOINT", "databricks-bge-rerank-v2")
 
 _RETURN_COLS = ["section_uid", "filename", "section_label", "original_label", "summary", "quality_score"]
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,9 +48,9 @@ class Citation:
 def _filters(company: str | None, fiscal_year: int | None) -> dict[str, Any] | None:
     out: dict[str, Any] = {}
     if company:
-        out["filename LIKE"] = f"%{company}%"
+        out["company_filter_text LIKE"] = f"%{company}%"
     if fiscal_year is not None:
-        out["filename LIKE"] = f"%{fiscal_year}%"
+        out["fiscal_year ="] = fiscal_year
     return out or None
 
 
@@ -97,12 +99,16 @@ def hybrid_retrieve(
 def _rerank(question: str, documents: list[dict[str, str]], *, top_k: int) -> list[int]:
     """Calls the Mosaic re-ranker endpoint; returns the original-row indices ordered by relevance."""
     w = WorkspaceClient()
-    response = w.serving_endpoints.query(
-        name=RERANK_ENDPOINT,
-        inputs={"query": question, "documents": [d["text"] for d in documents], "top_n": top_k},
-    )
-    ranked = response.predictions if hasattr(response, "predictions") else response["predictions"]
-    return [item["index"] for item in ranked[:top_k]]
+    try:
+        response = w.serving_endpoints.query(
+            name=RERANK_ENDPOINT,
+            inputs={"query": question, "documents": [d["text"] for d in documents], "top_n": top_k},
+        )
+        ranked = response.predictions if hasattr(response, "predictions") else response["predictions"]
+        return [item["index"] for item in ranked[:top_k]]
+    except Exception as exc:  # pragma: no cover - workspace failure path
+        _LOG.warning("Rerank endpoint %s failed; falling back to vector-search order: %s", RERANK_ENDPOINT, exc)
+        return list(range(min(top_k, len(documents))))
 
 
 def _row(row: list[Any], col: str) -> Any:

@@ -9,5 +9,3 @@ env:
   # (analyst-agent-${bundle.target}) so dev and prod stay isolated.
   - name: DOCINTEL_AGENT_ENDPOINT
     valueFrom: agent-endpoint
-  - name: DOCINTEL_LAKEBASE_DSN
-    valueFrom: docintel-lakebase

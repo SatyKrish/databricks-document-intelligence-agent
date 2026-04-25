@@ -62,6 +62,27 @@ def test_company_filter_passes_through(fake_index: MagicMock) -> None:
     fake_index.similarity_search.return_value = {"result": {"data_array": _candidates(3)}}
     from agent import retrieval
 
-    retrieval.hybrid_retrieve("Apple risks", top_k=5, company_filter="AAPL")
+    retrieval.hybrid_retrieve("Apple risks", top_k=5, company_filter="Apple")
     kwargs = fake_index.similarity_search.call_args.kwargs
-    assert kwargs.get("filters") and any("filename LIKE" in k for k in kwargs["filters"].keys())
+    assert kwargs.get("filters") == {"company_filter_text LIKE": "%Apple%"}
+
+
+def test_company_and_year_filters_do_not_clobber(fake_index: MagicMock) -> None:
+    fake_index.similarity_search.return_value = {"result": {"data_array": _candidates(3)}}
+    from agent import retrieval
+
+    retrieval.hybrid_retrieve("Apple FY2024 risks", top_k=5, company_filter="Apple", fiscal_year_filter=2024)
+    kwargs = fake_index.similarity_search.call_args.kwargs
+    assert kwargs.get("filters") == {"company_filter_text LIKE": "%Apple%", "fiscal_year =": 2024}
+
+
+def test_rerank_failure_falls_back_to_vector_order(fake_index: MagicMock) -> None:
+    fake_index.similarity_search.return_value = {"result": {"data_array": _candidates(8)}}
+    from agent import retrieval
+
+    with patch("agent.retrieval.WorkspaceClient") as workspace:
+        workspace.return_value.serving_endpoints.query.side_effect = RuntimeError("missing endpoint")
+        citations, retrieved = retrieval.hybrid_retrieve("top risks?", top_k=5)
+
+    assert [c.snippet for c in citations] == [f"summary {i}" for i in range(5)]
+    assert retrieved == 8

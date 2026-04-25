@@ -1,8 +1,9 @@
 """Thin Lakebase Postgres client for the Streamlit App.
 
 Persists conversation history, query logs, and feedback per the contracts in
-`specs/001-doc-intel-10k/contracts/`. The connection DSN is injected by the
-Databricks App runtime via env var `DOCINTEL_LAKEBASE_DSN`.
+`specs/001-doc-intel-10k/contracts/`. The Databricks App database resource
+binding exposes standard Postgres env vars (PGHOST, PGPORT, PGUSER,
+PGPASSWORD, PGDATABASE).
 """
 
 from __future__ import annotations
@@ -13,9 +14,6 @@ from contextlib import contextmanager
 from typing import Iterator
 
 import psycopg
-
-
-_DSN = os.environ.get("DOCINTEL_LAKEBASE_DSN")
 
 
 _SCHEMA = """
@@ -48,9 +46,24 @@ CREATE TABLE IF NOT EXISTS feedback (
 
 @contextmanager
 def _conn() -> Iterator[psycopg.Connection]:
-    if not _DSN:
-        raise RuntimeError("DOCINTEL_LAKEBASE_DSN not set; configure in app.yaml env")
-    with psycopg.connect(_DSN, autocommit=True) as c:
+    dsn = os.environ.get("DOCINTEL_LAKEBASE_DSN")
+    if dsn:
+        conninfo = dsn
+        kwargs = {}
+    else:
+        required = ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")
+        missing = [name for name in required if not os.environ.get(name)]
+        if missing:
+            raise RuntimeError(f"Lakebase binding missing Postgres env vars: {', '.join(missing)}")
+        conninfo = ""
+        kwargs = {
+            "host": os.environ["PGHOST"],
+            "port": os.environ["PGPORT"],
+            "user": os.environ["PGUSER"],
+            "password": os.environ["PGPASSWORD"],
+            "dbname": os.environ["PGDATABASE"],
+        }
+    with psycopg.connect(conninfo, autocommit=True, **kwargs) as c:
         yield c
 
 

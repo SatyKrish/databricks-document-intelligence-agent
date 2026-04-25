@@ -35,7 +35,7 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: databricks bundle deploy -t dev
-      - name: Register agent and assign @dev alias
+      - name: Register agent, assign @dev alias, and update serving endpoint
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -45,7 +45,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           pip install -r agent/requirements.txt
-          python agent/log_and_register.py --target dev
+          python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
       - name: CLEARS evaluation gate
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}

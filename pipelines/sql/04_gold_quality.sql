@@ -10,27 +10,27 @@ WITH scored AS (
     g.original_label,
     g.section_label,
     -- Each ai_query returns a stringified integer 0..6
-    CAST(ai_query(
+    COALESCE(TRY_CAST(ai_query(
       'databricks-meta-llama-3-3-70b-instruct',
       CONCAT('Score parse_completeness 0-6 for this 10-K section text (6=fully readable, 0=garbled). Reply with the integer only.\n', g.section_text)
-    ) AS INT) AS parse_completeness,
-    CAST(ai_query(
+    ) AS INT), 0) AS parse_completeness,
+    COALESCE(TRY_CAST(ai_query(
       'databricks-meta-llama-3-3-70b-instruct',
       CONCAT('Score layout_fidelity 0-6 for this section (6=tables/lists preserved, 0=lost structure). Reply with the integer only.\n', g.section_text)
-    ) AS INT) AS layout_fidelity,
-    CAST(ai_query(
+    ) AS INT), 0) AS layout_fidelity,
+    COALESCE(TRY_CAST(ai_query(
       'databricks-meta-llama-3-3-70b-instruct',
       CONCAT('Score ocr_confidence 0-6 (6=clean text, 0=heavy OCR artefacts). Reply with the integer only.\n', g.section_text)
-    ) AS INT) AS ocr_confidence,
-    CAST(ai_query(
+    ) AS INT), 0) AS ocr_confidence,
+    COALESCE(TRY_CAST(ai_query(
       'databricks-meta-llama-3-3-70b-instruct',
       CONCAT('Score section_recognizability 0-6 (6=clearly canonical 10-K section, 0=ambiguous). Section label: ',
              g.section_label, '. Reply with the integer only.\n', g.section_text)
-    ) AS INT) AS section_recognizability,
-    CAST(ai_query(
+    ) AS INT), 0) AS section_recognizability,
+    COALESCE(TRY_CAST(ai_query(
       'databricks-meta-llama-3-3-70b-instruct',
       CONCAT('Score kpi_extractability 0-6 (6=numeric KPIs explicit, 0=none). Reply with the integer only.\n', g.section_text)
-    ) AS INT) AS kpi_extractability
+    ) AS INT), 0) AS kpi_extractability
   FROM gold_filing_sections g
 )
 SELECT
@@ -72,8 +72,13 @@ SELECT
   s.original_label,
   s.section_label,
   s.summary,
+  k.company_name,
+  k.fiscal_year,
+  CONCAT_WS(' ', s.filename, k.company_name) AS company_filter_text,
   q.quality_score
 FROM STREAM(gold_filing_sections) s
 LEFT JOIN gold_filing_quality q
   ON s.filename = q.filename AND s.section_seq = q.section_seq
+LEFT JOIN gold_filing_kpis k
+  ON s.filename = k.filename
 WHERE q.quality_score >= ${quality_threshold} AND s.parse_status = 'ok';
