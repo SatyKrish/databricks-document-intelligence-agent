@@ -73,7 +73,7 @@ targets:
     workspace:
       profile: DEFAULT
       root_path: /Workspace/Shared/.bundle/${bundle.name}/prod
-    # Constitution VI + skill databricks-dabs: production mode requires a
+    # Constitution VI + Databricks Asset Bundles production mode requires a
     # service-principal `run_as`. `service_principal_id` defaults to "" so
     # `bundle validate -t prod` fails loudly until set — that's the safety.
     # Override via `--var service_principal_id=<sp-app-id>` on deploy.

@@ -34,8 +34,9 @@ def _auth_policy(catalog: str, schema: str, warehouse_id: str) -> AuthPolicy:
     """OBO-ready auth policy for the analyst pyfunc.
 
     System resources: enumerated so MLflow grants the deploying SP access at
-    deploy time (skill databricks-apps/platform-guide.md §"Service Principal
-    Permissions" — auto-grant by declaration).
+    deploy time (Databricks Apps service-principal permissions are
+    auto-granted by resource declaration — see
+    https://docs.databricks.com/aws/en/dev-tools/databricks-apps/access-data).
 
     User scopes: documented agent-side scopes per Databricks Model Serving
     OBO docs (https://docs.databricks.com/aws/en/generative-ai/agent-framework/

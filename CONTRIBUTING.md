@@ -39,9 +39,23 @@ The repo uses [Spec-Kit](https://github.com/github/spec-kit) for spec-driven dev
 
 Each phase auto-commits. Plans must include a Constitution Check that maps decisions to the relevant principle.
 
-## Working with the Databricks skills
+## Working with the Databricks skill bundles
 
-When you're touching anything Databricks-specific (DABs, pipelines, jobs, apps, model serving, lakebase), **read the matching skill in `.claude/skills/databricks-*/`** before designing. The skills encode current platform behavior; ignoring them produces stale recommendations. Cite the skill file + section in your PR description so reviewers can verify alignment.
+The original implementation was driven by Claude Code's Databricks skill bundles (`databricks-core`, `databricks-dabs`, `databricks-pipelines`, `databricks-jobs`, `databricks-apps`, `databricks-lakebase`, `databricks-model-serving`). Those bundles are distributed by Databricks via the Databricks CLI / Claude Code plugin channel, not vendored in this repo. If you have them installed locally, Claude Code loads them on demand; otherwise consult the official Databricks docs directly:
+
+| Skill | Canonical docs |
+|---|---|
+| databricks-core (CLI/auth) | https://docs.databricks.com/aws/en/dev-tools/cli/ |
+| databricks-dabs | https://docs.databricks.com/aws/en/dev-tools/bundles/ |
+| databricks-pipelines (Lakeflow SDP) | https://docs.databricks.com/aws/en/dlt/ |
+| databricks-jobs | https://docs.databricks.com/aws/en/jobs/ |
+| databricks-apps | https://docs.databricks.com/aws/en/dev-tools/databricks-apps/ |
+| databricks-lakebase | https://docs.databricks.com/aws/en/oltp/ |
+| databricks-model-serving | https://docs.databricks.com/aws/en/machine-learning/model-serving/ |
+
+When extending the project, link to the Databricks docs (or the local skill file path if you have it) in your PR description so reviewers can verify alignment with current platform behavior. The constitution's principle III ("declarative over imperative") plus the spec-kit cycle below replaces "ignore the docs and guess."
+
+Spec-Kit lives at https://github.com/github/spec-kit; Anthropic's general-purpose skills are at https://github.com/anthropics/skills.
 
 ## PR style
 

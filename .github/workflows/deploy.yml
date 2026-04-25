@@ -79,15 +79,17 @@ jobs:
             --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" || true
 
       - name: Apply app config + restart (canonical apps deploy command)
-        # Skill: databricks-apps/references/platform-guide.md §Deployment Workflow.
+        # Databricks Apps deploy docs:
+        # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy
         # `bundle deploy` alone uploads code but doesn't apply config/restart.
         run: databricks bundle run -t dev analyst_app
 
       - name: Verify OBO scopes survived deploy
-        # Skill: platform-guide.md §"Destructive Updates Warning" — `bundle run`
-        # may wipe user_api_scopes. Fail loudly so we re-apply. Asserts the full
-        # set required by the agent's call chain (serving + sql), not just sql.
-        # Skipped when user_api_scopes are not declared (workspace feature off).
+        # `bundle run` may wipe user_api_scopes (documented destructive-update
+        # behavior — see Databricks Apps deploy docs). Fail loudly so we
+        # re-apply. Asserts the full set required by the agent's call chain
+        # (serving + sql), not just sql. Skipped when user_api_scopes are
+        # not declared (workspace feature off).
         run: |
           if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml; then
             databricks apps get doc-intel-analyst-dev --output json > /tmp/app.json

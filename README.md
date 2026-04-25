@@ -2,7 +2,7 @@
 
 A **Databricks-native document intelligence + agent** stack that turns SEC 10-K annual reports into a queryable lakehouse and a cited Q&A experience — built end-to-end with **Spec-Kit** for spec-driven development and **Claude Code** with the Databricks skill suite for AI-assisted implementation.
 
-> **Status**: Pre-1.0 learning artifact. Open-sourced as a reference implementation for teams adopting Databricks Document Intelligence, Agent Bricks, Spec-Kit, and AI-driven development workflows.
+> **Status**: Open-source reference implementation. This repo demonstrates production-grade Databricks patterns, but it is not a turnkey production deployment. See [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md), [`VALIDATION.md`](./VALIDATION.md), and [`SECURITY.md`](./SECURITY.md) before using it with real analyst traffic.
 
 ```
    SEC 10-K PDF                       Analyst's question
@@ -16,8 +16,8 @@ A **Databricks-native document intelligence + agent** stack that turns SEC 10-K 
    └─────────────────────┘              └──────────────────────┘
                                                   │
                                                   ▼
-                                          "Apple cited supply-chain
-                                           risk [1], China exposure
+                                          "ACME cited supply-chain
+                                           risk [1], AI competition
                                            [2], regulation [3]…"
 ```
 
@@ -29,7 +29,15 @@ A research analyst's assistant for SEC 10-K annual reports. Drop a PDF into a go
 
 Once indexed, an analyst opens a Streamlit app on Databricks Apps and asks questions in plain English. The agent retrieves the most relevant filing sections, generates a grounded answer with inline citations, and persists the conversation + thumbs feedback to a Lakebase Postgres database. Cross-company comparisons ("compare segment revenue across ACME, BETA, GAMMA") are handled by a supervisor agent that fans out per-company queries and renders a markdown table. The repo ships with synthetic 10-Ks (`samples/{ACME,BETA,GAMMA}_10K_2024.pdf` + a low-quality `garbage_10K_2024.pdf` for SC-006 testing) so the corpus is fully reproducible.
 
-The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, evaluation gate — is one **Databricks Asset Bundle (DAB)**. After a one-time bootstrap, `databricks bundle deploy -t dev` recreates everything.
+The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, evaluation gate — is one **Databricks Asset Bundle (DAB)**. The included staged bootstrap handles first-deploy ordering dependencies; steady-state deploys use the same bundle resources.
+
+### Readiness levels
+
+| Level | Meaning | Required evidence |
+|---|---|---|
+| Reference-ready | Synthetic corpus deploys and demonstrates the architecture end-to-end | Dev bundle validates, bootstrap succeeds, synthetic CLEARS passes |
+| Pilot-ready | Real 10-K filings validate parse/extract/retrieval behavior | Reference-ready + small real EDGAR corpus + reviewed costs/latency |
+| Production-ready | Analysts can use it under governed identity and operational SLOs | Pilot-ready + app-level OBO enabled, audit proof, alerts/dashboards, rollback tested |
 
 ---
 
@@ -131,7 +139,7 @@ The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, e
               └──────────────────────┘
 ```
 
-The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served behind an **AI Gateway** (rate limiting per-user, usage tracking, inference-table audit). Identity passthrough is implemented at the *App layer* — the Streamlit app extracts the user's `x-forwarded-access-token` header and constructs a user-scoped `WorkspaceClient` so any UC SQL the agent runs is governed under the user's identity, not the App SP. See `app/README.md` for the OBO flow.
+The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served behind an **AI Gateway** (rate limiting per-user, usage tracking, inference-table audit). Identity passthrough is implemented at the *App layer* when the workspace has Databricks Apps user-token passthrough enabled: the Streamlit app extracts the user's `x-forwarded-access-token` header and constructs a user-scoped `WorkspaceClient`. The served model is OBO-ready via MLflow `auth_policy` and Model Serving user credentials. If app-level passthrough is not enabled, the app falls back to service-principal auth and the repo must be treated as a reference/dev deployment, not a production row-level-security deployment. See [`SECURITY.md`](./SECURITY.md) and `app/README.md`.
 
 ### Runtime stack
 
@@ -163,12 +171,14 @@ The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served beh
    │    usage tracking      │  │   at row-by-row)       │
    └────────────────────────┘  └────────────────────────┘
 
-   OBO (user identity end-to-end):
+   OBO (user identity end-to-end, when enabled):
    ──────────────────────────────
    App reads `x-forwarded-access-token` from the request, builds
    `WorkspaceClient(token=...)`, calls the serving endpoint with the
-   user's identity. Agent code's downstream UC SQL runs as the user.
-   AI Gateway logs per-user usage; UC ACLs enforce row/column rules.
+   user's identity. The agent-side MLflow auth policy and Model Serving
+   OBO credentials let downstream calls run as the user. If the app-side
+   feature is unavailable, the bootstrap script prints an explicit warning
+   and the deployment remains reference/dev only.
 ```
 
 **Why Postgres for state?** Delta tables are great for analytics but bad at "insert one tiny row per chat turn at high frequency." Lakebase is Databricks's managed Postgres — same governance, right tool for the job.
@@ -220,7 +230,7 @@ When you read `specs/001-doc-intel-10k/plan.md` you'll see a "Constitution Check
 
 [**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe the entire workspace state as YAML. One root `databricks.yml` declares variables and targets (`dev`, `prod`); `resources/**/*.yml` declares each resource (pipeline, jobs, vector index, serving endpoint, app, monitor, dashboard, Lakebase). `databricks bundle deploy -t dev` reconciles workspace state to YAML.
 
-This repo was built with seven Databricks-specific Claude Code skills, each maintained with current platform guidance:
+This repo was built with local Databricks-specific Claude Code skills, each maintained with current platform guidance. Those local skill files are not vendored in the open-source tree; install or reference your own Databricks/Claude Code skills when extending the project.
 
 | Skill | What it provides |
 |---|---|
@@ -232,7 +242,7 @@ This repo was built with seven Databricks-specific Claude Code skills, each main
 | **databricks-lakebase** | Lakebase Postgres instances, branches, computes, endpoint provisioning |
 | **databricks-model-serving** | Model Serving endpoints, AI Gateway, served entities, scaling config |
 
-Skills are loaded by Claude Code on demand. When you ask Claude to "wire up Vector Search," it reads the `databricks-pipelines` and `databricks-model-serving` skills *before* writing YAML, so the output reflects current Databricks API shapes — not stale training data.
+Skills are loaded by Claude Code on demand. When you ask Claude to "wire up Vector Search," it should read the Databricks pipeline/model-serving guidance *before* writing YAML, so the output reflects current Databricks API shapes — not stale training data.
 
 ### Pillar 3 — Claude Code as the implementation surface
 
@@ -451,9 +461,6 @@ databricks/
 │   ├── memory/constitution.md     # Six non-negotiable principles
 │   └── extensions.yml             # Auto-commit hooks per phase
 │
-├── .claude/
-│   └── skills/                    # Databricks + Spec-Kit skills (loaded on demand)
-│
 └── .github/workflows/
     └── deploy.yml                 # PR validate; main → deploy + CLEARS gate
 ```
@@ -474,7 +481,7 @@ databricks/
 
 ## Status & limitations
 
-This is a **pilot-scale** reference implementation, not a production-ready product:
+This is a **pilot-scale** reference implementation, not a turnkey production deployment:
 
 | Limit | Value | Source |
 |---|---|---|
@@ -488,6 +495,8 @@ This is a **pilot-scale** reference implementation, not a production-ready produ
 | Eval set size | 30 questions | spec clarification |
 
 Latency SLOs: P95 ≤ 8s for single-filing, ≤ 20s for cross-company. End-to-end pipeline ≤ 10 min P95 on a 30 MB PDF.
+
+For the production evidence checklist, see [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md). For reproducible validation steps, see [`VALIDATION.md`](./VALIDATION.md). For identity and SP fallback policy, see [`SECURITY.md`](./SECURITY.md).
 
 ---
 

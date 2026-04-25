@@ -2,14 +2,15 @@
 -- FR-001 (event-triggered ingest), FR-013 (idempotent on filename),
 -- spec edge case "PDFs > 50 MB" (rejected to bronze_filings_rejected).
 --
--- Single Auto Loader source: skill databricks-pipelines/auto-loader-sql.md prescribes
--- one STREAM read_files() per source path. Both bronze_filings and
+-- Single Auto Loader source: per Databricks Auto Loader docs
+-- (https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/),
+-- use one STREAM read_files() per source path. Both bronze_filings and
 -- bronze_filings_rejected derive from the same checkpoint via a streaming view.
-
--- Skill: databricks-pipelines/references/temporary-view-sql.md — `CREATE
--- TEMPORARY VIEW` is the only canonical form; the view becomes a streaming
--- source by reading `STREAM read_files(...)` in its body. Downstream tables
--- then read it via `STREAM(raw_pdf_arrivals)`.
+--
+-- The Lakeflow SQL reference documents `CREATE TEMPORARY VIEW` as the only
+-- canonical form; the view becomes a streaming source by reading
+-- `STREAM read_files(...)` in its body. Downstream tables then read it via
+-- `STREAM(raw_pdf_arrivals)`.
 CREATE TEMPORARY VIEW raw_pdf_arrivals AS
 SELECT
   path,

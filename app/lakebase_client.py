@@ -5,7 +5,8 @@ Persists conversation history, query logs, and feedback per the contracts in
 binding exposes standard Postgres env vars (PGHOST, PGPORT, PGUSER,
 PGPASSWORD, PGDATABASE).
 
-Skill: databricks-apps/references/appkit/lakebase.md — initialize schema at
+Databricks Apps + Lakebase docs (https://docs.databricks.com/aws/en/oltp/) —
+initialize schema at
 startup is the canonical pattern. Tables get owned by whatever Postgres user
 is connected at first init. In deployed mode this is the App SP (because the
 `database` resource binding maps PGUSER to the SP's client_id). In local-dev

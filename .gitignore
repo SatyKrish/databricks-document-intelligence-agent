@@ -1,5 +1,7 @@
-# Claude Code — per-user settings (may contain credentials)
+# Claude Code — per-user settings and local skills/harness files
 .claude/settings.local.json
+.claude/skills/
+.claude/scheduled_tasks.lock
 
 # macOS
 .DS_Store
@@ -18,9 +20,6 @@ __pycache__/
 # MLflow local registry artifacts (used by log_and_register.py during local runs)
 mlflow.db
 mlruns/
-
-# Claude harness
-.claude/scheduled_tasks.lock
 
 # Databricks CLI local metadata cache
 .databricks/

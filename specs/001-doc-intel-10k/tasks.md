@@ -25,7 +25,7 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-- [ ] T001 Verify `databricks` CLI ≥ 0.260 is installed and `databricks auth profiles` shows a working profile; if missing, follow `.claude/skills/databricks-core/databricks-cli-install.md`
+- [ ] T001 Verify `databricks` CLI ≥ 0.260 is installed and `databricks auth profiles` shows a working profile; if missing, follow the official Databricks CLI installation docs
 - [x] T002 Create the bundle skeleton at `databricks.yml` with `bundle.name: doc-intel-10k`, `targets: {dev, prod}`, variables `catalog`, `schema`, `workspace_host`, `service_principal_id` (prod only), `embedding_model_endpoint_name`, `quality_threshold` (default 22), `top_k` (default 5)
 - [x] T003 [P] Add `.github/workflows/deploy.yml` running `databricks bundle validate -t dev` on PR and `databricks bundle deploy -t dev` + `python evals/clears_eval.py` on push to `main`
 - [x] T004 [P] Create empty `pipelines/sql/`, `agent/`, `app/`, `evals/`, `resources/{pipelines,jobs,vector_search,serving,lakebase,monitors,dashboards,apps}/` directories with `.gitkeep` files
@@ -89,13 +89,13 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 - [x] T023 [US2] Implement `agent/tools.py`: a UC Function tool wrapping `SELECT * FROM gold_filing_kpis WHERE filename = :filename` for the agent to access structured KPIs deterministically
 - [x] T024 [US2] Implement `agent/analyst_agent.py`: a `mlflow.pyfunc` model class implementing the Mosaic AI Agent Framework chat protocol; uses `retrieval.hybrid_retrieve` for grounding, calls a foundation model endpoint to generate the answer, returns the schema in `contracts/agent-response.json` (depends on T022, T023)
 - [x] T025 [US2] Implement `agent/log_and_register.py`: `mlflow.pyfunc.log_model(...)`, `mlflow.register_model(...)` to UC at `${var.catalog}.${var.schema}.analyst_agent`; assign UC Model Alias `@dev` (and later `@prod`) to the freshly registered version so Model Serving in T026 follows the alias rather than a frozen version (depends on T024)
-- [x] T026 [US2] Define the Model Serving endpoint in `resources/serving/agent.serving.yml`: CPU instance, served entity = `${var.catalog}.${var.schema}.analyst_agent@dev` (UC Model Alias, not a pinned version), AI Gateway with rate limit + audit + identity passthrough enabled (depends on T025)
+- [x] T026 [US2] Define the Model Serving endpoint in `resources/consumers/agent.serving.yml`: CPU instance, served entity = `${var.catalog}.${var.schema}.analyst_agent`, AI Gateway with rate limit + audit enabled (depends on T025)
 - [x] T027 [US2] Implement `app/app.py` (Streamlit): chat input, calls the agent endpoint via `databricks.sdk.WorkspaceClient.serving_endpoints.query`, renders answer + citations as chips that show filename + section on hover, thumbs-up/down + comment widget that POSTs to a Lakebase write helper; persists `conversation_id` in session state (depends on T026, T007)
 - [x] T028 [US2] Implement `app/lakebase_client.py`: thin wrapper using `psycopg` with the bundle-injected DSN to insert into `conversation_history`, `query_logs`, `feedback`
-- [x] T029 [US2] Define the Databricks App in `resources/apps/analyst.app.yml`: source = `app/`, runtime python, env = Lakebase DSN secret + agent endpoint URL secret (depends on T027, T028)
+- [x] T029 [US2] Define the Databricks App in `resources/consumers/analyst.app.yml`: source = `app/`, runtime python, env = Lakebase binding + agent endpoint binding (depends on T027, T028)
 - [x] T030 [US2] Author `evals/dataset.jsonl` 20 P2 questions per `data-model.md`'s eval section (each with `expected_filename`, `expected_section`, `expected_answer_keywords`, `min_citations`)
 - [x] T031 [US2] Implement `evals/clears_eval.py`: connects to the dev endpoint, runs `mlflow.evaluate()` with `databricks-agents` evaluators on the dataset, asserts thresholds C≥0.8, L p95≤8s, E≥0.95, A≥0.9, R≥0.8, S≥0.99; exits non-zero on failure (depends on T026, T030)
-- [x] T032 [US2] Define Lakehouse Monitoring in `resources/monitors/kpi_drift.yml`: `inference` profile on `gold_filing_kpis`, slicing on `company_name`, `fiscal_year`; baselines computed from first 10 filings (depends on T011)
+- [x] T032 [US2] Define Lakehouse Monitoring in `resources/consumers/kpi_drift.yml`: `inference` profile on `gold_filing_kpis`, slicing on `company_name`, `fiscal_year`; baselines computed from first 10 filings (depends on T011)
 - [x] T033 [US2] Extend `resources/dashboards/usage.lvdash.yml` with widgets over `lakebase.query_logs`: top questions, daily active users, p95 latency, citation count distribution, ungrounded-answer rate (depends on T028, T017)
 
 **Checkpoint**: P2 acceptance scenarios 1–3 pass via App; CLEARS gate passes for the P2 slice of the eval set.

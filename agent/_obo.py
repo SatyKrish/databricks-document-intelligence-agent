@@ -1,7 +1,7 @@
 """On-behalf-of credentials helpers for the analyst pyfunc.
 
 Inside Model Serving, the model receives a per-request user context. The
-canonical wiring (per Databricks Agent Framework / Model Serving OBO docs at
+canonical wiring (per Databricks Model Serving OBO docs at
 https://docs.databricks.com/aws/en/generative-ai/agent-framework/agent-authentication-model-serving)
 is:
 
@@ -20,6 +20,12 @@ tests, local dev, and OBO-disabled workspaces working without code changes.
 documented agent-side scopes `model-serving` and `vector-search`, and the
 SystemAuthPolicy with the resources the model touches; together they tell
 Model Serving to inject the per-request user token into `predict()`.
+
+(Databricks Apps OBO docs:
+https://docs.databricks.com/aws/en/dev-tools/databricks-apps/iam-auth.
+Project skill bundles — `databricks-apps`, `databricks-model-serving`, etc. —
+are distributed by Databricks via the CLI / Claude Code plugin channel and
+are not vendored in this repo; see `CONTRIBUTING.md` for the full mapping.)
 """
 
 from __future__ import annotations

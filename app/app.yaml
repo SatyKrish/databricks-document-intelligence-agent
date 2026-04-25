@@ -1,7 +1,7 @@
 # Databricks Apps runtime config — Streamlit.
 # Skill alignment:
-#   .claude/skills/databricks-apps/references/other-frameworks.md §1 (port/host)
-#   .claude/skills/databricks-apps/references/other-frameworks.md §8 (Streamlit env vars)
+#   Databricks Apps guidance for non-AppKit Streamlit apps: bind to the
+#   injected port/host and disable Streamlit CORS/XSRF behind the Apps proxy.
 
 command:
   - streamlit
@@ -15,14 +15,15 @@ command:
 env:
   # Disable Streamlit's CORS + XSRF self-checks. The Apps reverse-proxy origin
   # (*.databricksapps.com) differs from the workspace origin, which trips
-  # Streamlit's protections without these flags. Skill §8.
+  # Streamlit's protections without these flags. (Databricks Apps runtime
+  # docs: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)
   - name: STREAMLIT_SERVER_ENABLE_CORS
     value: "false"
   - name: STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION
     value: "false"
 
   # Resolved at runtime from the resource bindings declared in
-  # resources/apps/analyst.app.yml. The bindings are target-aware
+  # resources/consumers/analyst.app.yml. The bindings are target-aware
   # (analyst-agent-${bundle.target}) so dev and prod stay isolated.
   - name: DOCINTEL_AGENT_ENDPOINT
     valueFrom: agent-endpoint

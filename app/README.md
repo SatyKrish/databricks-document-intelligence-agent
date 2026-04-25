@@ -19,7 +19,7 @@ databricks bundle run -t dev analyst_app
 # Open the App URL from the workspace UI ("Apps" → doc-intel-analyst-dev)
 ```
 
-The first request creates the `conversation_history`, `query_logs`, and `feedback` tables in Lakebase. Tables are owned by the App's bound service principal (auto-granted `CAN_CONNECT_AND_CREATE` per `resources/apps/analyst.app.yml`).
+The first request creates the `conversation_history`, `query_logs`, and `feedback` tables in Lakebase. Tables are owned by the App's bound service principal (auto-granted `CAN_CONNECT_AND_CREATE` per `resources/consumers/analyst.app.yml`).
 
 ## Running locally
 
@@ -54,8 +54,8 @@ DROP TABLE IF EXISTS conversation_history CASCADE;
 
 The app forwards each user's `x-forwarded-access-token` header to the agent serving endpoint via a `WorkspaceClient(token=...)` cache (`app.py:_user_client`). Agent-side UC SQL calls then run as the user, not the App SP — UC ACLs are honored end-to-end.
 
-`user_api_scopes` declared in `resources/apps/analyst.app.yml` (`sql`, `iam.access-control:read`, `iam.current-user:read`) — required for OBO to work for UC SQL queries inside the agent.
+`user_api_scopes` declared in `resources/consumers/analyst.app.yml` (`serving.serving-endpoints`, `sql`, `iam.access-control:read`, `iam.current-user:read`) — required for app-level OBO to invoke the serving endpoint as the user. The agent-side Model Serving auth policy separately declares `model-serving` and `vector-search`.
 
-**Streamlit gotcha (skill `databricks-apps/references/other-frameworks.md` §8)**: the OBO token is captured at the initial HTTP request; the connection then upgrades to WebSocket and the token never refreshes. If a user's UC permissions change mid-session, ask them to reload the page.
+**Streamlit gotcha** (per the [Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)): the OBO token is captured at the initial HTTP request; the connection then upgrades to WebSocket and the token never refreshes. If a user's UC permissions change mid-session, ask them to reload the page.
 
 **Local-dev caveat**: `st.context.headers` won't have `x-forwarded-access-token` when running `streamlit run` outside the Databricks Apps reverse proxy, so the OBO helper falls back to the SP client. That's fine for development — UC ACLs in dev workspaces are usually permissive — but verify against deployed dev before assuming OBO works.

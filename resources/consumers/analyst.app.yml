@@ -5,9 +5,9 @@ resources:
       description: "10-K Analyst — chat over indexed filings with citations"
       source_code_path: ../../app
 
-      # Skill: databricks-apps/references/platform-guide.md §"Service Principal
-      # Permissions" — declaring resources here auto-grants the listed
-      # permission to the App SP on deploy. Do NOT also grant manually.
+      # Databricks Apps auto-grants the declared permissions to the App SP
+      # on deploy — see https://docs.databricks.com/aws/en/dev-tools/databricks-apps/access-data
+      # Do NOT also grant manually.
       resources:
         - name: docintel-lakebase
           database:
@@ -19,13 +19,13 @@ resources:
             name: analyst-agent-${bundle.target}
             permission: CAN_QUERY
 
-      # OBO scopes (skill databricks-apps/references/platform-guide.md
-      # §"Authentication") require the workspace-level "Databricks Apps -
-      # user token passthrough" feature. If your workspace does NOT have
-      # it enabled, DAB rejects this field with PERMISSION_DENIED at
-      # deploy time — leave the block commented out and the app will fall
-      # back to SP creds (with a loud bring-up banner). Uncomment after
-      # a workspace admin enables the feature.
+      # OBO scopes (Databricks Apps IAM/auth docs:
+      # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/iam-auth)
+      # require the workspace-level "Databricks Apps - user token passthrough"
+      # feature. If your workspace does NOT have it enabled, DAB rejects this
+      # field with PERMISSION_DENIED at deploy time — leave the block
+      # commented out and the app will fall back to SP creds (with a loud
+      # bring-up banner). Uncomment after a workspace admin enables the feature.
       #
       # Required scopes for this app's OBO call chain:
       #   serving.serving-endpoints   — invoke analyst-agent-${target} as the user

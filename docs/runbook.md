@@ -59,9 +59,9 @@ Failures are logged as a JSON list under the run tag `failures`. The script exit
 |---|---|---|
 | `bundle validate` fails on `ai_parse_document` | Workspace lacks AI Functions GA | Move SQL warehouse to a recent serverless channel |
 | Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
-| Agent endpoint 401 | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and `resources/apps/analyst.app.yml:user_api_scopes` includes `sql` |
-| Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (skill `databricks-apps/references/platform-guide.md` §"Destructive Updates") | Re-apply: `databricks apps update doc-intel-analyst-dev --user-api-scopes sql,iam.access-control:read,iam.current-user:read` |
-| Streamlit user sees stale UC permissions | OBO token captured at WebSocket open; never refreshes (skill §8) | Reload the page after permission changes |
+| Agent endpoint 401 | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and `resources/consumers/analyst.app.yml:user_api_scopes` includes `serving.serving-endpoints` and `sql` |
+| Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (documented destructive-update behavior — see [Databricks Apps deploy docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy)) | Re-apply: `databricks apps update doc-intel-analyst-dev --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read` |
+| Streamlit user sees stale UC permissions | OBO token captured at WebSocket open; never refreshes ([Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)) | Reload the page after permission changes |
 | Lakebase tables not writable from deployed App | Local-dev `streamlit run` initialised schema under user identity, not App SP | Connect as App SP and `DROP TABLE feedback, query_logs, conversation_history`; next App run re-creates them under SP. See `app/README.md` |
 | CLEARS Latency axis fails | Re-rank window too large | Reduce candidate window in `agent/retrieval.py` from 25 to 15 |
 | App errors connecting to Lakebase | Database resource binding missing Postgres env vars | Check the `docintel-lakebase` resource binding and `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` in the App runtime |
@@ -123,8 +123,8 @@ The bundle has three chicken-egg dependencies that a single `bundle deploy` cann
 resolve on a fresh workspace. Each needs a phase-2 step after a prior side effect:
 
 1. **Model Serving endpoint references a concrete agent model version**
-   - `resources/serving/agent.serving.yml` must contain a numeric placeholder
-     because DAB serving config rejects UC alias syntax in this workspace.
+   - `resources/consumers/agent.serving.yml` must contain a numeric placeholder
+     because DAB serving config may reject UC alias syntax.
    - CI registers a fresh model version and then calls
      `agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev`
      to update the served entity to the new version.
@@ -132,7 +132,7 @@ resolve on a fresh workspace. Each needs a phase-2 step after a prior side effec
      deploy, or bootstrap the endpoint once and let the script advance it.
 
 2. **Lakehouse Monitor references `gold_filing_kpis` which the pipeline must create first**
-   - `resources/monitors/kpi_drift.yml` attaches to a table that doesn't exist
+   - `resources/consumers/kpi_drift.yml` attaches to a table that doesn't exist
      until the pipeline has run at least once.
    - **Fix**: move the monitor into a separate `bundle deploy --include monitors`
      step run after the first pipeline trigger, or comment out the monitor on

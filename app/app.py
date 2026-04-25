@@ -17,7 +17,7 @@ from databricks.sdk.config import Config
 from app import lakebase_client
 
 
-AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set via resource binding in resources/apps/analyst.app.yml
+AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set via resource binding in resources/consumers/analyst.app.yml
 
 
 @st.cache_resource
@@ -30,10 +30,12 @@ def _sp_client() -> WorkspaceClient:
 def _user_client(token: str | None) -> WorkspaceClient:
     """User-scoped (OBO) client built from the request's x-forwarded-access-token.
 
-    Skill: databricks-apps/references/other-frameworks.md §3 + platform-guide.md §Authentication.
-    Streamlit gotcha (skill §8): the OBO token is captured at the initial HTTP
-    request, then the connection switches to WebSocket — the token never refreshes.
-    Long-lived sessions should reload the page after permission changes.
+    Databricks Apps OBO docs:
+    https://docs.databricks.com/aws/en/dev-tools/databricks-apps/iam-auth.
+    Streamlit gotcha (per the Apps runtime docs): the OBO token is captured at
+    the initial HTTP request, then the connection switches to WebSocket — the
+    token never refreshes. Long-lived sessions should reload the page after
+    permission changes.
 
     `token=None` → SP fallback (local dev, or unauthenticated requests).
     """
