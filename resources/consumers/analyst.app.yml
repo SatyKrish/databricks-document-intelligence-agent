@@ -21,10 +21,11 @@ resources:
 
       # OBO scopes (skill databricks-apps/references/platform-guide.md
       # §"Authentication") require the workspace-level "Databricks Apps -
-      # user token passthrough" feature to be enabled. This workspace
-      # (organization 7474654018084939) does not have it enabled — DAB
-      # rejects the field with PERMISSION_DENIED at deploy time. Re-enable
-      # by uncommenting AFTER a workspace admin enables the feature.
+      # user token passthrough" feature. If your workspace does NOT have
+      # it enabled, DAB rejects this field with PERMISSION_DENIED at
+      # deploy time — leave the block commented out and the app will fall
+      # back to SP creds (with a loud bring-up banner). Uncomment after
+      # a workspace admin enables the feature.
       #
       # Required scopes for this app's OBO call chain:
       #   serving.serving-endpoints   — invoke analyst-agent-${target} as the user

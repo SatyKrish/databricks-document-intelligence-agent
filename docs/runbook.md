@@ -68,7 +68,7 @@ Failures are logged as a JSON list under the run tag `failures`. The script exit
 
 ## Enabling end-to-end OBO
 
-Currently disabled in this workspace (organization 7474654018084939). The agent code is OBO-ready (`agent/_obo.user_workspace`, `VectorSearchClient(credential_strategy=CredentialStrategy.MODEL_SERVING_USER_CREDENTIALS)` in `retrieval.py`, `auth_policy` declared in `log_and_register.py`), and the app forwards `x-forwarded-access-token` via `app/app.py:_user_client`. **What's missing is the App-side scope declaration**, which the workspace rejects until the feature is enabled.
+If your workspace lacks the "Databricks Apps - user token passthrough" feature, OBO end-to-end is operationally disabled until an admin turns it on. The agent code is OBO-ready (`agent/_obo.user_workspace`, `VectorSearchClient(credential_strategy=CredentialStrategy.MODEL_SERVING_USER_CREDENTIALS)` in `retrieval.py`, `auth_policy` declared in `log_and_register.py`), and the app forwards `x-forwarded-access-token` via `app/app.py:_user_client`. **What's missing is the App-side scope declaration**, which the workspace rejects until the feature is enabled.
 
 **Bootstrap prints a `⚠ APP-LEVEL OBO IS OPERATIONALLY DISABLED` banner** whenever the `user_api_scopes` block in `resources/consumers/analyst.app.yml` is commented out, so this state is visible in every bring-up log.
 

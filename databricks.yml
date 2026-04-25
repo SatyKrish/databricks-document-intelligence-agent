@@ -51,7 +51,10 @@ targets:
     default: true
     workspace:
       profile: DEFAULT
-      root_path: /Workspace/Users/dev@example.com/.bundle/${bundle.name}/dev
+      # Per-user dev path so two engineers' deploys don't stomp each other.
+      # `${workspace.current_user.userName}` resolves to the auth profile's
+      # email at deploy time.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/dev
     variables:
       catalog: workspace
       schema: docintel_10k_dev

@@ -21,3 +21,6 @@ mlruns/
 
 # Claude harness
 .claude/scheduled_tasks.lock
+
+# Databricks CLI local metadata cache
+.databricks/

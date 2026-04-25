@@ -493,7 +493,7 @@ Latency SLOs: P95 ≤ 8s for single-filing, ≤ 20s for cross-company. End-to-en
 
 ## License & attribution
 
-This repository is intended to be **open-sourced for learning purposes**. A `LICENSE` file has not been added yet — choose one (MIT or Apache-2.0 are common picks for learning artifacts) before publishing publicly.
+Released under the **MIT License** — see [`LICENSE`](./LICENSE). Use it, fork it, learn from it; just keep the copyright notice.
 
 Built with:
 
