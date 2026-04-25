@@ -19,7 +19,7 @@ The bundle has three chicken-egg dependencies that prevent a single `databricks 
 2. **Lakehouse Monitor** (`resources/monitors/kpi_drift.yml`) attaches to `gold_filing_kpis`, which doesn't exist until the pipeline runs once.
 3. **Lakebase database_catalog + Databricks App** race the `database_instance` provisioning.
 
-**Canonical fix**: Run `./scripts/bootstrap-dev.sh` for fresh stand-ups; plain `databricks bundle deploy -t dev` for steady-state. The script tolerates expected first-deploy errors, runs the pipeline, registers the agent, and re-deploys to converge.
+**Canonical fix**: Run `./scripts/bootstrap-dev.sh` for fresh stand-ups; plain `databricks bundle deploy -t dev` for steady-state. The script does a **staged deploy** — `resources/` is split into `foundation/` (no data deps) and `consumers/` (need data). Stage 1 temporarily renames consumer YAMLs to `*.yml.skip` so the bundle glob skips them; stage 2 produces data and then runs full `bundle deploy`. **Both deploys succeed cleanly** — no "errors tolerated" hand-waving, no orphans to clean up on retry.
 
 **Do NOT try to "fix" these by:**
 - Adding `depends_on` between heterogeneous DAB resource types — DAB doesn't reliably honor it across instance↔catalog↔app.
@@ -31,17 +31,18 @@ Full breakdown lives in [`docs/runbook.md`](./docs/runbook.md) §"Known deploy o
 ## Where things live
 
 ```
-pipelines/sql/    Lakeflow SDP — Bronze → Silver → Gold (SQL only, principle III)
-agent/            Mosaic AI Agent Framework: pyfunc, retrieval, supervisor, UC tools, registration
-app/              Streamlit on Databricks Apps + Lakebase psycopg client
-evals/            MLflow CLEARS gate (clears_eval.py + dataset.jsonl)
-jobs/             Lakeflow Jobs Python tasks (retention, index_refresh)
-resources/        DAB resource YAML (one subdir per kind: pipelines/, jobs/, vector_search/, serving/, lakebase/, monitors/, dashboards/, apps/, dabs/)
-scripts/          Operational scripts (bootstrap-dev.sh)
-samples/          Sample 10-K for smoke tests
-specs/001-…       Spec-Kit artifacts (spec, plan, tasks, research, data-model, contracts, quickstart)
-docs/runbook.md   Day-2 ops + bring-up workflow
-.specify/         Spec-Kit machinery (constitution.md is the source of truth)
+pipelines/sql/        Lakeflow SDP — Bronze → Silver → Gold (SQL only, principle III)
+agent/                Mosaic AI Agent Framework: pyfunc, retrieval, supervisor, UC tools, registration, OBO helpers
+app/                  Streamlit on Databricks Apps + Lakebase psycopg client
+evals/                MLflow CLEARS gate (clears_eval.py + dataset.jsonl)
+jobs/                 Lakeflow Jobs Python tasks (retention, index_refresh)
+resources/foundation/ DAB resources with no data deps: catalog/schema/volume, pipeline, retention job, Lakebase instance
+resources/consumers/  DAB resources that depend on foundation data: serving endpoint, monitor, VS endpoint, index-refresh job, app, dashboard, Lakebase catalog
+scripts/              Operational scripts (bootstrap-dev.sh, wait_for_kpis.py)
+samples/              Synthetic 10-K PDFs (regenerable via synthesize.py)
+specs/001-…           Spec-Kit artifacts (spec, plan, tasks, research, data-model, contracts, quickstart)
+docs/runbook.md       Day-2 ops + bring-up workflow
+.specify/             Spec-Kit machinery (constitution.md is the source of truth)
 ```
 
 ## Build & deploy

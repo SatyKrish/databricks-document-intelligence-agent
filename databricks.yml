@@ -62,7 +62,7 @@ targets:
           development: true
           # Dev override: triggered runs only, to avoid a continuously-running
           # serverless cluster during smoke iterations. Prod inherits
-          # continuous: true from resources/pipelines/doc_intel.pipeline.yml.
+          # continuous: true from resources/foundation/doc_intel.pipeline.yml.
           continuous: false
 
   prod:

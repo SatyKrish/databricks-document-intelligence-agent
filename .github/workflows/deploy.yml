@@ -41,25 +41,28 @@ jobs:
         run: |
           pip install -r agent/requirements.txt -r evals/requirements.txt
 
-      - name: Deploy bundle (dev)
-        run: databricks bundle deploy -t dev
+      - name: Stage 1 — deploy foundation only (consumers temp-renamed out)
+        # Foundation has no data dependencies; deploys cleanly. Consumers are
+        # renamed to *.yml.skip so the bundle's resources/**/*.yml glob skips
+        # them. They get restored at the end of this step.
+        run: |
+          for f in resources/consumers/*.yml; do mv "$f" "$f.skip"; done
+          trap 'for f in resources/consumers/*.yml.skip; do mv "$f" "${f%.skip}"; done' EXIT
+          databricks bundle deploy -t dev
 
-      - name: Seed dev volume with synthetic 10-Ks
+      - name: Stage 1.5 — produce data
         run: |
           for f in samples/*_10K_*.pdf; do
             databricks fs cp "$f" \
               "dbfs:/Volumes/${DOCINTEL_CATALOG}/${DOCINTEL_SCHEMA}/raw_filings/" \
               --overwrite
           done
-
-      - name: Trigger pipeline + wait for KPIs
-        run: |
           databricks bundle run -t dev doc_intel_pipeline
           python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
+          python agent/log_and_register.py --target dev
 
-      - name: Register agent + repoint serving endpoint
-        run: |
-          python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
+      - name: Stage 2 — deploy full bundle (consumers attach to live foundation)
+        run: databricks bundle deploy -t dev
 
       - name: Apply post-deploy UC grants (catalog + schema; not DAB-supported)
         # UC requires the full chain: USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE.
@@ -86,7 +89,7 @@ jobs:
         # set required by the agent's call chain (serving + sql), not just sql.
         # Skipped when user_api_scopes are not declared (workspace feature off).
         run: |
-          if grep -q '^      user_api_scopes:' resources/apps/analyst.app.yml; then
+          if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml; then
             databricks apps get doc-intel-analyst-dev --output json > /tmp/app.json
             python -c "
 import json

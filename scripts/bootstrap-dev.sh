@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
-# Bootstrap a fresh dev workspace end-to-end.
+# Bootstrap a fresh dev workspace end-to-end via STAGED deploys.
 #
-# The bundle has three first-deploy ordering gaps (see docs/runbook.md
-# §"Known deploy ordering gaps"): the serving endpoint references a model
-# version that doesn't yet exist, the Lakehouse Monitor attaches to a table
-# the pipeline must create, and the App + Lakebase catalog race the
-# database_instance bring-up. This script orchestrates the workaround:
+# Architecture: resources are split into two stages (resources/foundation/
+# and resources/consumers/). Foundation has no data dependencies; consumers
+# need foundation to be running and producing data (registered model version,
+# populated KPI table, AVAILABLE Lakebase instance).
 #
-#   1. First deploy (errors expected on serving/monitor/app — tolerated).
-#   2. Trigger the pipeline so gold_filing_kpis materialises.
-#   3. Wait for the table to have at least one row.
-#   4. Register the agent model and repoint the serving endpoint.
-#   5. Re-deploy — everything resolves.
+# DAB doesn't natively support partial deploys, so stage 1 temporarily renames
+# resources/consumers/*.yml → *.yml.skip so the bundle's `resources/**/*.yml`
+# glob skips them. A trap restores the names on any exit path. Stage 2 deploys
+# the full bundle (foundation idempotent, consumers create cleanly).
+#
+# Steps:
+#   0. Detect & clean known orphans from prior failed runs.
+#   1. Stage 1 deploy: foundation only.
+#   2. Produce data: upload samples, run pipeline, register model, wait for
+#      Lakebase to be AVAILABLE.
+#   3. Stage 2 deploy: full bundle (consumers attach to live foundation).
+#   4. Apply app config + restart.
+#   5. UC grants chain (USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE).
+#   6. Smoke check.
 #
 # Required env vars:
 #   DOCINTEL_CATALOG       e.g. workspace
 #   DOCINTEL_SCHEMA        e.g. docintel_10k_dev
-#   DOCINTEL_WAREHOUSE_ID  SQL warehouse used to poll for the kpi table
+#   DOCINTEL_WAREHOUSE_ID  SQL warehouse id (used by wait_for_kpis + smoke)
 #
 # Optional:
-#   DOCINTEL_TARGET        bundle target (default: dev)
-#   DOCINTEL_SAMPLE_PDF    path to a sample PDF to drop in raw_filings
-#                          (default: samples/ACME_10K_2024.pdf)
-#   DOCINTEL_WAIT_SECONDS  poll timeout for step 3 (default: 600)
+#   DOCINTEL_TARGET           bundle target (default: dev)
+#   DOCINTEL_ANALYST_GROUP    UC group for grants (default: "account users")
+#   DOCINTEL_WAIT_SECONDS     poll timeout for KPI table (default: 600)
+#   DOCINTEL_LAKEBASE_TIMEOUT poll timeout for Lakebase (default: 600)
 
 set -euo pipefail
 
@@ -34,9 +42,11 @@ die() { log "error: $*"; exit 1; }
 : "${DOCINTEL_WAREHOUSE_ID:?must be set}"
 
 TARGET="${DOCINTEL_TARGET:-dev}"
-SAMPLE_PDF="${DOCINTEL_SAMPLE_PDF:-samples/ACME_10K_2024.pdf}"
+ANALYST_GROUP="${DOCINTEL_ANALYST_GROUP:-account users}"
 WAIT_SECONDS="${DOCINTEL_WAIT_SECONDS:-600}"
+LAKEBASE_TIMEOUT="${DOCINTEL_LAKEBASE_TIMEOUT:-600}"
 ENDPOINT="analyst-agent-${TARGET}"
+APP_NAME="doc-intel-analyst-${TARGET}"
 KPI_TABLE="${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}.gold_filing_kpis"
 VOLUME_PATH="dbfs:/Volumes/${DOCINTEL_CATALOG}/${DOCINTEL_SCHEMA}/raw_filings"
 PIPELINE_KEY="doc_intel_pipeline"
@@ -45,7 +55,6 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# Prefer the repo's virtualenv if present (macOS doesn't ship a `python`); fall back to system python3.
 if [[ -x ".venv/bin/python" ]]; then
   PYTHON=".venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
@@ -54,92 +63,195 @@ else
   die "no python interpreter found (.venv/bin/python or python3)"
 fi
 
-log "step 1/5: initial deploy (serving/monitor/app errors are expected and tolerated)"
-if ! databricks bundle deploy -t "$TARGET"; then
-  log "first deploy reported errors — continuing per ordering-gap workaround"
+# ─── Step 0: orphan detection + cleanup ─────────────────────────────────────
+# Remove leftover consumer resources from prior partial runs that would block
+# stage 2's clean creates with RESOURCE_ALREADY_EXISTS. Strict checks: only
+# delete if the resource is in a known-broken state.
+log "step 0/6: detecting orphans from prior failed runs"
+
+# Malformed serving endpoint: exists but has no served entities (created in a
+# stage-1 deploy that ran before the model version existed).
+if ep_state=$(databricks api get "/api/2.0/serving-endpoints/${ENDPOINT}" --output json 2>/dev/null); then
+  if "$PYTHON" -c "
+import json, sys
+ep = json.loads(sys.argv[1])
+served = (ep.get('config') or {}).get('served_entities') or (ep.get('config') or {}).get('served_models') or []
+if not served:
+    print('orphan: empty config', file=sys.stderr); sys.exit(0)
+sys.exit(1)
+" "$ep_state" 2>/dev/null; then
+    log "  → deleting malformed serving endpoint $ENDPOINT (no served entities)"
+    databricks api delete "/api/2.0/serving-endpoints/${ENDPOINT}" >/dev/null 2>&1 || \
+      log "  warn: delete failed, continuing"
+  fi
 fi
 
-log "step 2a/5: copying synthetic samples to $VOLUME_PATH"
+# Lakebase soft-delete name conflict: if the desired instance name appears in
+# DELETING state, bump var.lakebase_instance to the next free suffix.
+LAKEBASE_NAME=$("$PYTHON" -c "
+import yaml, sys
+with open('databricks.yml') as f:
+    d = yaml.safe_load(f)
+print(d['targets']['$TARGET']['variables']['lakebase_instance'])
+" 2>/dev/null || echo "")
+if [[ -n "$LAKEBASE_NAME" ]]; then
+  if instances=$(databricks api get /api/2.0/database/instances --output json 2>/dev/null); then
+    conflict=$("$PYTHON" -c "
+import json, sys
+d = json.loads(sys.argv[1])
+target = sys.argv[2]
+for i in d.get('database_instances', []):
+    if i.get('name') == target and i.get('state') == 'DELETING':
+        print('CONFLICT')
+        break
+" "$instances" "$LAKEBASE_NAME" 2>/dev/null || echo "")
+    if [[ "$conflict" == "CONFLICT" ]]; then
+      log "  → Lakebase name $LAKEBASE_NAME is in DELETING state; pick a different name in databricks.yml and retry"
+      die "Lakebase name conflict (soft-delete retention)"
+    fi
+  fi
+fi
+
+# ─── Step 1: stage-1 deploy (foundation only) ───────────────────────────────
+log "step 1/6: stage-1 deploy (foundation only)"
+
+# Hide consumer resources from the bundle by suffixing them. Trap restores
+# them on any exit path so a crash here doesn't leave the repo in a half-
+# renamed state.
+shopt -s nullglob
+consumer_files=(resources/consumers/*.yml)
+shopt -u nullglob
+
+restore_consumers() {
+  local f
+  for f in resources/consumers/*.yml.skip; do
+    [[ -f "$f" ]] || continue
+    mv "$f" "${f%.skip}"
+  done
+}
+trap restore_consumers EXIT INT TERM
+
+for f in "${consumer_files[@]}"; do
+  mv "$f" "$f.skip"
+done
+
+databricks bundle deploy -t "$TARGET" --force-lock || \
+  die "stage-1 deploy failed (foundation should be self-contained — investigate)"
+
+# Restore consumer YAMLs so stage 2 can deploy them.
+restore_consumers
+trap - EXIT INT TERM
+
+# ─── Step 2: produce data ───────────────────────────────────────────────────
+log "step 2/6: producing data — uploading samples, running pipeline, registering model"
+
 shopt -s nullglob
 sample_pdfs=(samples/*_10K_*.pdf)
 shopt -u nullglob
 if (( ${#sample_pdfs[@]} == 0 )); then
-  log "no PDFs in samples/; run samples/synthesize.py to regenerate"
+  log "  no PDFs in samples/; run samples/synthesize.py to regenerate"
 else
   for pdf in "${sample_pdfs[@]}"; do
-    databricks fs cp "$pdf" "$VOLUME_PATH/" --overwrite || \
-      log "fs cp $pdf failed — continuing"
+    databricks fs cp "$pdf" "$VOLUME_PATH/" --overwrite >/dev/null 2>&1 || \
+      log "  warn: fs cp $pdf failed, continuing"
   done
 fi
 
-log "step 2b/5: triggering pipeline run ($PIPELINE_KEY)"
 databricks bundle run -t "$TARGET" "$PIPELINE_KEY" || \
   die "pipeline run failed — inspect SDP UI before retrying"
 
-log "step 3/5: waiting up to ${WAIT_SECONDS}s for $KPI_TABLE to have >= 1 row"
 "$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
-  die "timed out waiting for $KPI_TABLE; rerun with DOCINTEL_WAIT_SECONDS=<bigger>"
+  die "timed out waiting for $KPI_TABLE"
 
-log "step 4/5: registering agent model and repointing $ENDPOINT"
-"$PYTHON" agent/log_and_register.py --target "$TARGET" --serving-endpoint "$ENDPOINT" || \
+# Register the agent model (no --serving-endpoint — endpoint doesn't exist
+# until stage 2 deploy).
+"$PYTHON" agent/log_and_register.py --target "$TARGET" || \
   die "agent registration failed"
 
-log "step 5/5: final deploy — serving/monitor/app should now resolve cleanly"
-databricks bundle deploy -t "$TARGET"
-
-# Apps deploy: skill databricks-apps/references/platform-guide.md §Deployment
-# Workflow — `bundle deploy` uploads code; the app config + restart needs an
-# explicit `bundle run`.
-log "step 5b/5: applying app config + restart (analyst_app)"
-databricks bundle run -t "$TARGET" analyst_app || \
-  log "warn: analyst_app run failed — fix the app and retry 'databricks bundle run -t $TARGET analyst_app'"
-
-# OBO scope verification (skill platform-guide §"Destructive Updates Warning"):
-# only relevant when user_api_scopes is set in resources/apps/analyst.app.yml.
-# This workspace currently lacks the user-token-passthrough feature, so the
-# scopes are commented out. Re-enable this block when the feature lands.
-APP_NAME="doc-intel-analyst-${TARGET}"
-if grep -q '^      user_api_scopes:' resources/apps/analyst.app.yml 2>/dev/null; then
-  log "step 5c/5: verifying OBO scopes on $APP_NAME"
-  databricks apps get "$APP_NAME" --output json > /tmp/docintel-app.json || \
-    log "warn: could not fetch app state for scope verification"
-  if [[ -f /tmp/docintel-app.json ]]; then
+# Wait for Lakebase to reach AVAILABLE so stage 2's catalog/app bind cleanly.
+log "  waiting up to ${LAKEBASE_TIMEOUT}s for Lakebase $LAKEBASE_NAME state=AVAILABLE"
+deadline=$(( $(date +%s) + LAKEBASE_TIMEOUT ))
+while :; do
+  state=$(databricks api get /api/2.0/database/instances --output json 2>/dev/null | \
     "$PYTHON" -c "
 import json, sys
-app = json.load(open('/tmp/docintel-app.json'))
-scopes = set(app.get('user_api_scopes') or [])
-# Required for the OBO call chain: serving-endpoint invocation +
-# UC SQL via warehouse. iam.* defaults are also expected.
-required = {'serving.serving-endpoints', 'sql'}
-missing = required - scopes
-if missing:
-    print(f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})', file=sys.stderr)
-    sys.exit(1)
-print(f'OBO scopes intact: {sorted(scopes)}')
-" || log "warn: OBO scopes wiped — re-apply via 'databricks apps update $APP_NAME --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read'"
+d = json.load(sys.stdin)
+for i in d.get('database_instances', []):
+    if i.get('name') == '$LAKEBASE_NAME':
+        print(i.get('state', 'UNKNOWN'))
+        break
+" 2>/dev/null || echo "UNKNOWN")
+  if [[ "$state" == "AVAILABLE" ]]; then
+    log "  → Lakebase $LAKEBASE_NAME is AVAILABLE"
+    break
   fi
-else
-  log "step 5c/5: user_api_scopes not declared (workspace feature off); skipping OBO scope check"
-fi
+  if (( $(date +%s) >= deadline )); then
+    die "Lakebase $LAKEBASE_NAME did not reach AVAILABLE within ${LAKEBASE_TIMEOUT}s (state=$state)"
+  fi
+  sleep 15
+done
 
-# UC grants (not declarative in DAB as of CLI 0.298 — skill resource-permissions.md
-# only lists volumes for native `grants:`). UC requires the chain:
-# USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE. Skipping USE_CATALOG silently
-# breaks queries even when schema-level grants look right.
-ANALYST_GROUP="${DOCINTEL_ANALYST_GROUP:-account users}"
-log "step 5d/5: applying USE_CATALOG grant for ${ANALYST_GROUP} on ${DOCINTEL_CATALOG}"
+# ─── Step 3: stage-2 deploy (full bundle) ───────────────────────────────────
+log "step 3/6: stage-2 deploy (full bundle — consumers join the foundation)"
+databricks bundle deploy -t "$TARGET" --force-lock || \
+  die "stage-2 deploy failed — should not happen if data is in place; check logs"
+
+# ─── Step 4: app run ────────────────────────────────────────────────────────
+log "step 4/6: applying app config + restart"
+databricks bundle run -t "$TARGET" analyst_app || \
+  log "  warn: analyst_app run failed; retry manually with 'databricks bundle run -t $TARGET analyst_app'"
+
+# ─── Step 5: UC grants chain ────────────────────────────────────────────────
+log "step 5/6: applying UC grants for ${ANALYST_GROUP} (catalog → schema)"
 databricks api patch \
   "/api/2.1/unity-catalog/permissions/CATALOG/${DOCINTEL_CATALOG}" \
   --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_CATALOG\"]}]}" \
-  >/dev/null 2>&1 || \
-  log "warn: catalog USE_CATALOG grant failed (may already be applied; UC dedupes)"
+  >/dev/null 2>&1 || log "  warn: USE_CATALOG grant failed (may already be applied; UC dedupes)"
 
-log "step 5e/5: applying schema grants for ${ANALYST_GROUP} on ${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}"
 databricks api patch \
   "/api/2.1/unity-catalog/permissions/SCHEMA/${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}" \
   --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" \
-  >/dev/null 2>&1 || \
-  log "warn: schema grants call failed (may already be applied; UC dedupes)"
+  >/dev/null 2>&1 || log "  warn: schema grants failed (may already be applied; UC dedupes)"
 
-log "done. Endpoint: $ENDPOINT  |  KPI table: $KPI_TABLE  |  App: $APP_NAME"
+# Optional OBO scope verification: only if user_api_scopes is declared (the
+# workspace must have user-token-passthrough enabled).
+if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml 2>/dev/null; then
+  log "  verifying OBO scopes on $APP_NAME"
+  if app_state=$(databricks apps get "$APP_NAME" --output json 2>/dev/null); then
+    "$PYTHON" -c "
+import json
+app = json.loads('''$app_state''')
+scopes = set(app.get('user_api_scopes') or [])
+required = {'serving.serving-endpoints', 'sql'}
+missing = required - scopes
+if missing:
+    raise SystemExit(f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})')
+print(f'  OBO scopes intact: {sorted(scopes)}')
+" || log "  warn: OBO scopes wiped — re-apply via 'databricks apps update $APP_NAME --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read'"
+  fi
+else
+  log "  user_api_scopes not declared (workspace feature off); skipping OBO scope check"
+fi
+
+# ─── Step 6: smoke check ────────────────────────────────────────────────────
+log "step 6/6: smoke check on $ENDPOINT"
+if smoke=$("$PYTHON" -c "
+from databricks.sdk import WorkspaceClient
+import json, sys
+w = WorkspaceClient()
+out = w.serving_endpoints.query(name='$ENDPOINT', inputs=[{'question': 'What was ACMEs revenue in fiscal 2024?', 'top_k': 3}])
+preds = out.predictions if hasattr(out, 'predictions') else out['predictions']
+r = preds[0] if isinstance(preds, list) else preds
+print(json.dumps({'grounded': r.get('grounded'), 'agent_path': r.get('agent_path'), 'citations': len(r.get('citations') or [])}))
+" 2>&1); then
+  log "  smoke OK: $smoke"
+else
+  log "  warn: smoke check failed (endpoint may still be warming up); details: $smoke"
+fi
+
+log "done."
+log "  endpoint:    $ENDPOINT"
+log "  KPI table:   $KPI_TABLE"
+log "  app:         $APP_NAME"
+log "  Lakebase:    $LAKEBASE_NAME"
 log "next: $PYTHON evals/clears_eval.py --endpoint $ENDPOINT --dataset evals/dataset.jsonl"

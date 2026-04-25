@@ -122,7 +122,7 @@ resolve on a fresh workspace. Each needs a phase-2 step after a prior side effec
      usually succeeds since the instance is then ready.
    - **Fix**: `bundle deploy -t dev` twice on first stand-up, or add a wait task.
 
-A clean fresh-workspace bring-up is now a single command:
+A clean fresh-workspace bring-up is a single command:
 
 ```bash
 DOCINTEL_CATALOG=<catalog> \
@@ -131,10 +131,32 @@ DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
 ./scripts/bootstrap-dev.sh
 ```
 
-The script orchestrates: first deploy (errors tolerated) → upload sample PDF →
-trigger pipeline → wait for `gold_filing_kpis` → register agent + repoint
-serving endpoint → final deploy. UC grants are applied separately via
-`databricks api post /api/2.1/unity-catalog/permissions/...` once per
-workspace and are not re-applied on subsequent runs. CI (`.github/workflows/deploy.yml`)
-calls the same `agent/log_and_register.py --serving-endpoint` step on every
-push to main, so steady-state deploys remain a plain `bundle deploy`.
+The script implements a **staged deploy**: resources are split into
+`resources/foundation/` (no data deps) and `resources/consumers/` (need
+data). Stage 1 temporarily renames consumer YAMLs to `*.yml.skip` so the
+bundle's `resources/**/*.yml` glob excludes them — foundation deploys
+cleanly. Stage 2 brings up data (sample upload, pipeline run, model
+register, Lakebase ready) and then runs full `bundle deploy`, with all
+consumer dependencies satisfied. The previous "errors tolerated on first
+deploy" workaround is gone — both deploys succeed cleanly.
+
+Six-step flow:
+
+1. **Orphan detection** — delete a malformed serving endpoint with no
+   served entities (leftover from a prior partial run); fail loudly if
+   the configured Lakebase name is in `DELETING` state (soft-delete
+   retention conflict — bump the suffix and retry).
+2. **Foundation deploy** — `resources/consumers/*.yml` renamed to
+   `*.yml.skip`; `bundle deploy` only touches catalog/schema/volume,
+   pipeline, retention job, Lakebase instance.
+3. **Produce data** — upload synthetic samples, run pipeline, wait for
+   `gold_filing_kpis`, register agent model (no `--serving-endpoint`,
+   endpoint doesn't exist yet), wait for Lakebase to reach `AVAILABLE`.
+4. **Consumer deploy** — full `bundle deploy` (foundation idempotent;
+   consumers create cleanly because all deps are live).
+5. **App run + UC grants chain** — `bundle run analyst_app`,
+   `USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE` for the analyst group.
+6. **Smoke check** — query the serving endpoint with one sample question.
+
+CI (`.github/workflows/deploy.yml`) uses the same staged shape so steady-
+state pushes don't re-introduce orphans.

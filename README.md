@@ -75,7 +75,7 @@ The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, e
 
 **Key idea — "parse once, extract many":** PDFs are expensive to parse. Silver runs `ai_parse_document` exactly once per file and stores the structured result as a `VARIANT`. Everything downstream — classification, KPI extraction, summarization, quality scoring — reads the parsed output, never the raw bytes. This is a non-negotiable constitution principle.
 
-**Triggering**: prod runs the pipeline in `continuous: true` mode so Auto Loader (`read_files`) reacts to new PDFs in the volume automatically. Dev overrides to `continuous: false` to avoid a 24/7 cluster during smoke iterations. See `resources/pipelines/doc_intel.pipeline.yml` and the dev override block in `databricks.yml`.
+**Triggering**: prod runs the pipeline in `continuous: true` mode so Auto Loader (`read_files`) reacts to new PDFs in the volume automatically. Dev overrides to `continuous: false` to avoid a 24/7 cluster during smoke iterations. See `resources/foundation/doc_intel.pipeline.yml` and the dev override block in `databricks.yml`.
 
 ### Vector Search bridges data and agent
 
@@ -277,17 +277,44 @@ DABs deploy *everything in one shot*. But our resources have a chicken-and-egg p
    ▶ Single `bundle deploy` → 4+ errors on a fresh workspace.
 ```
 
-The fix is `scripts/bootstrap-dev.sh`, which sequences the bring-up:
+The fix is a **staged deploy** orchestrated by `scripts/bootstrap-dev.sh`. Resources are split into two directories by data dependency:
 
 ```
-   Step 1 ▸ bundle deploy     (some errors expected — skipped, not fatal)
-   Step 2 ▸ upload sample PDF, trigger pipeline
-   Step 3 ▸ wait for gold_filing_kpis to have ≥1 row
-   Step 4 ▸ register agent model v1, repoint serving endpoint
-   Step 5 ▸ bundle deploy AGAIN → everything resolves
+   resources/
+   ├── foundation/        ← no data deps — deploy first
+   │   ├── catalog.yml             (schema + volume + grants)
+   │   ├── doc_intel.pipeline.yml
+   │   ├── retention.job.yml
+   │   └── lakebase_instance.yml
+   │
+   └── consumers/         ← need foundation to be RUNNING and producing data
+       ├── agent.serving.yml     (needs registered model version)
+       ├── kpi_drift.yml         (needs gold_filing_kpis table)
+       ├── filings_index.yml     (VS endpoint)
+       ├── index_refresh.job.yml (needs source table)
+       ├── analyst.app.yml       (needs Lakebase + agent endpoint)
+       ├── usage.dashboard.yml
+       └── lakebase_catalog.yml  (needs instance AVAILABLE)
 ```
 
-After that first run, steady-state CI is just `bundle deploy` because all resources exist. The full breakdown — including the failure modes we hit and tolerated — lives in [`docs/runbook.md`](./docs/runbook.md).
+Bootstrap flow (every step succeeds cleanly — no "errors tolerated"):
+
+```
+   Step 0 ▸ orphan detection (delete leftover endpoints / catch
+            soft-deleted Lakebase name conflicts)
+   Step 1 ▸ stage-1 deploy: foundation only.
+            consumer YAMLs temp-renamed to *.yml.skip so the bundle
+            glob excludes them. Trap restores on any exit.
+   Step 2 ▸ produce data: upload samples, run pipeline, register
+            model, wait for Lakebase state=AVAILABLE.
+   Step 3 ▸ stage-2 deploy: full bundle. Foundation idempotent;
+            consumers attach to the live foundation.
+   Step 4 ▸ bundle run analyst_app  (apply config + restart)
+   Step 5 ▸ UC grants: USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE
+   Step 6 ▸ smoke query
+```
+
+After bring-up, steady-state CI uses the same staged shape so no orphans accumulate. Full breakdown in [`docs/runbook.md`](./docs/runbook.md).
 
 ---
 
@@ -364,7 +391,8 @@ databricks/
 │   ├── retrieval.py               # Hybrid search + re-rank
 │   ├── supervisor.py              # Cross-company fan-out
 │   ├── tools.py                   # UC Function tool over gold_filing_kpis
-│   ├── log_and_register.py        # Register model + repoint serving endpoint
+│   ├── _obo.py                    # On-behalf-of credentials helpers
+│   ├── log_and_register.py        # Register + auth_policy + alias
 │   └── tests/                     # pytest unit tests
 │
 ├── app/                           # Streamlit App on Databricks Apps
@@ -380,22 +408,31 @@ databricks/
 │   ├── retention/prune_volume.py  # 90-day raw PDF cleanup
 │   └── index_refresh/sync_index.py  # Vector Search SYNC INDEX
 │
-├── resources/                     # DAB resource definitions (one yml per kind)
-│   ├── pipelines/                 # Lakeflow SDP definition
-│   ├── jobs/                      # Retention + index-refresh
-│   ├── vector_search/             # VS endpoint + Delta-Sync index
-│   ├── serving/                   # Model Serving + AI Gateway
-│   ├── lakebase/                  # Postgres instance + catalog
-│   ├── monitors/                  # Lakehouse Monitoring on KPI table
-│   ├── dashboards/                # AI/BI Lakeview usage dashboard
-│   ├── apps/                      # Databricks App resource
-│   └── dabs/                      # Catalog + schema + volume
+├── resources/                     # DAB resources, split by data dependency
+│   ├── foundation/                # Stage 1 — no data deps
+│   │   ├── catalog.yml            # Schema + volume + grants
+│   │   ├── doc_intel.pipeline.yml # Lakeflow SDP
+│   │   ├── retention.job.yml      # 90-day raw cleanup
+│   │   └── lakebase_instance.yml  # Postgres instance
+│   └── consumers/                 # Stage 2 — depend on foundation data
+│       ├── agent.serving.yml      # Model Serving + AI Gateway
+│       ├── analyst.app.yml        # Databricks App
+│       ├── filings_index.yml      # Vector Search endpoint
+│       ├── index_refresh.job.yml  # VS sync job
+│       ├── kpi_drift.yml          # Lakehouse Monitoring
+│       ├── lakebase_catalog.yml   # Postgres catalog (binds to instance)
+│       └── usage.dashboard.yml    # AI/BI Lakeview dashboard
 │
 ├── scripts/                       # Operational scripts
-│   └── bootstrap-dev.sh           # Fresh-workspace bring-up
+│   ├── bootstrap-dev.sh           # Fresh-workspace bring-up (staged deploy)
+│   └── wait_for_kpis.py           # Poll helper used by bootstrap + CI
 │
-├── samples/                       # Sample 10-K for smoke tests
-│   └── ACME_10K_2024.pdf
+├── samples/                       # Synthetic 10-Ks for smoke tests + eval
+│   ├── synthesize.py              # Reproducible PDF generator
+│   ├── ACME_10K_2024.pdf
+│   ├── BETA_10K_2024.pdf
+│   ├── GAMMA_10K_2024.pdf
+│   └── garbage_10K_2024.pdf       # SC-006 negative test (low quality)
 │
 ├── specs/                         # Spec-Kit artifacts
 │   └── 001-doc-intel-10k/

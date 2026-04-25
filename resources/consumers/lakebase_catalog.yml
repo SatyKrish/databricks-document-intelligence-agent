@@ -1,12 +1,4 @@
 resources:
-  database_instances:
-    docintel_state:
-      name: ${var.lakebase_instance}
-      capacity: CU_1
-      node_count: 1
-      retention_window_in_days: 7
-      stopped: ${var.lakebase_stopped}
-
   database_catalogs:
     docintel_state_catalog:
       name: ${var.lakebase_instance}
