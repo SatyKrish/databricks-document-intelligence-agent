@@ -91,3 +91,54 @@ P2 correctness:  <value>
 P3 correctness:  <value>
 Latency p95:     <ms>
 ```
+
+## Known deploy ordering gaps (discovered in the 2026-04-24 smoke test)
+
+The bundle has three chicken-egg dependencies that a single `bundle deploy` cannot
+resolve on a fresh workspace. Each needs a phase-2 step after a prior side effect:
+
+1. **Model Serving endpoint references the agent model alias `@dev`**
+   - `resources/serving/agent.serving.yml` sets `entity_version: "@${bundle.target}"`.
+   - This fails with `Entity version must be a number` until the model is logged
+     and the alias assigned (`agent/log_and_register.py --target dev`).
+   - **Fix**: split deploy. (a) Run a one-time bootstrap that calls
+     `log_and_register.py` against an empty pipeline run, OR (b) change the
+     yml to a literal version after the first registration. The GH Actions
+     workflow already orders register before serving — local single-shot deploys
+     need the same split.
+
+2. **Lakehouse Monitor references `gold_filing_kpis` which the pipeline must create first**
+   - `resources/monitors/kpi_drift.yml` attaches to a table that doesn't exist
+     until the pipeline has run at least once.
+   - **Fix**: move the monitor into a separate `bundle deploy --include monitors`
+     step run after the first pipeline trigger, or comment out the monitor on
+     fresh deploys and add it after the first ingest.
+
+3. **Lakebase `database_catalog` and `App` race the `database_instance` provisioning**
+   - The catalog and app attach to the instance before the instance has finished
+     coming up. Re-running `bundle deploy` immediately after the first attempt
+     usually succeeds since the instance is then ready.
+   - **Fix**: `bundle deploy -t dev` twice on first stand-up, or add a wait task.
+
+A clean fresh-workspace bring-up sequence:
+
+```bash
+# 1. Initial deploy. Expect 3 errors: serving, monitor, app.
+DATABRICKS_BUNDLE_ENGINE=direct databricks bundle deploy -t dev
+
+# 2. Apply UC grants.
+databricks api post /api/2.1/unity-catalog/permissions/SCHEMA/<catalog>.<schema> \
+  --json '{"changes":[{"principal":"<analyst_group>","add":["USE_SCHEMA","SELECT","EXECUTE"]}]}'
+
+# 3. Drop a sample 10-K into the volume; trigger pipeline; wait for gold_filing_kpis.
+
+# 4. Register the agent model and assign @dev alias.
+DOCINTEL_CATALOG=<catalog> DOCINTEL_SCHEMA=<schema> python agent/log_and_register.py --target dev
+
+# 5. Re-deploy. Serving + monitor + app should all succeed now.
+DATABRICKS_BUNDLE_ENGINE=direct databricks bundle deploy -t dev
+```
+
+A future iteration should fold steps 2–5 into the `.github/workflows/deploy.yml`
+or a dedicated `scripts/bootstrap-dev.sh` so a single command re-creates the
+entire stack.

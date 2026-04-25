@@ -16,7 +16,7 @@ resources:
               DOCINTEL_VS_ENDPOINT: docintel-${bundle.target}
               DOCINTEL_FOUNDATION_ENDPOINT: ${var.foundation_model_endpoint_name}
               DOCINTEL_RERANK_ENDPOINT: ${var.rerank_model_endpoint_name}
-              DOCINTEL_WAREHOUSE_ID: "{{secrets/docintel/warehouse_id}}"
+              DOCINTEL_WAREHOUSE_ID: ${var.warehouse_id}
         traffic_config:
           routes:
             - served_model_name: analyst_agent

@@ -7,7 +7,10 @@ include:
 variables:
   catalog:
     description: Unity Catalog name
-    default: main
+    default: workspace
+  lakebase_instance:
+    description: Lakebase Postgres instance name (must be DNS-compliant — alphanumeric + hyphens only)
+    default: docintel-state
   schema:
     description: Schema for all 10-K Analyst resources
     default: docintel_10k
@@ -47,8 +50,9 @@ targets:
     workspace:
       profile: DEFAULT
     variables:
-      catalog: main
+      catalog: workspace
       schema: docintel_10k_dev
+      lakebase_instance: docintel-dev-state
     resources:
       pipelines:
         doc_intel_pipeline:
@@ -65,5 +69,6 @@ targets:
     # run_as:
     #   service_principal_name: ${var.service_principal_id}
     variables:
-      catalog: main
+      catalog: workspace
       schema: docintel_10k
+      lakebase_instance: docintel-prod-state

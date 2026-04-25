@@ -3,7 +3,7 @@ resources:
     usage_dashboard:
       display_name: 10-K Analyst — Usage & Pipeline Health (${bundle.target})
       file_path: ../../src/dashboards/usage.lvdash.json
-      warehouse_id: "{{secrets/docintel/warehouse_id}}"
+      warehouse_id: ${var.warehouse_id}
       dataset_catalog: ${var.catalog}
       dataset_schema: ${var.schema}
       permissions:

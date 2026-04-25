@@ -7,8 +7,8 @@ resources:
       resources:
         - name: docintel-lakebase
           database:
-            database_name: ${var.schema}_state
-            instance_name: ${var.schema}_state
+            database_name: ${var.lakebase_instance}
+            instance_name: ${var.lakebase_instance}
             permission: CAN_CONNECT_AND_CREATE
         - name: agent-endpoint
           serving_endpoint:
