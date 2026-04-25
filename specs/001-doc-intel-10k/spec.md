@@ -5,6 +5,16 @@
 **Status**: Draft
 **Input**: User description: "Databricks-native 10-K Analyst that ingests SEC-style annual report PDFs from a Unity Catalog volume, parses them with ai_parse_document, classifies sections with ai_classify, extracts structured KPIs with ai_extract, scores parsed sections against a quality rubric, indexes high-quality summaries into Mosaic AI Vector Search, and exposes a Knowledge Assistant + supervisor agent through a Databricks App."
 
+## Clarifications
+
+### Session 2026-04-24
+
+- Q: What end-to-end agent response P95 latency SLO should we commit to? → A: P95 ≤ 8s (single-filing), ≤ 20s (cross-company)
+- Q: What CLEARS per-axis thresholds gate promotion? → A: Correctness ≥ 0.8, Latency p95 ≤ 8s, Execution ≥ 0.95, Adherence ≥ 0.9, Relevance ≥ 0.8, Safety ≥ 0.99
+- Q: What are the dimensions of the section quality rubric? → A: 5 dimensions (parse_completeness, layout_fidelity, ocr_confidence, section_recognizability, kpi_extractability), each scored 0–6, threshold ≥ 22/30
+- Q: How is the curated eval set authored and sized? → A: 30 questions hand-authored (20 P2 + 10 P3) checked into evals/dataset.jsonl
+- Q: Raw PDF retention policy in the UC volume? → A (default applied, no user prompt): retain raw PDFs 90 days in the volume; Silver/Gold/index retained indefinitely
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 — Ingest, parse, and extract a 10-K (Priority: P1)
@@ -74,12 +84,12 @@ An analyst asks a multi-company question — e.g., "Compare segment revenue betw
 - **FR-002**: System MUST parse each filing exactly once into a Silver layer using a layout-aware parser whose output preserves nested tables, headers, and OCR'd content; the parsed representation MUST be a flexible structured type that tolerates schema evolution.
 - **FR-003**: System MUST classify each parsed section into one of: MD&A, Risk Factors, Financial Statements, Notes, Other; original section labels MUST be retained alongside the canonical label.
 - **FR-004**: System MUST extract per-filing structured KPIs against a defined JSON schema including: `revenue` (numeric, USD), `ebitda` (numeric, USD), `segment_revenue` (array of `{name, revenue}`), `top_risks` (array of strings), `fiscal_year` (integer), `company_name` (string), and `extraction_confidence` (numeric 0-1).
-- **FR-005**: System MUST score every Gold row against an explicit quality rubric and persist the score; only rows above a configured threshold MAY be embedded into the Vector Search index.
+- **FR-005**: System MUST score every Gold row against a five-dimension quality rubric — `parse_completeness`, `layout_fidelity`, `ocr_confidence`, `section_recognizability`, `kpi_extractability` — each scored 0–6 (rubric total 0–30); rows with total ≥ 22 MUST be eligible for the Vector Search index, rows below MUST be excluded but retained in Gold for audit.
 - **FR-006**: System MUST embed curated section summaries (not raw chunks) into Vector Search; the index MUST refresh automatically when Gold updates.
-- **FR-007**: System MUST expose an agent endpoint behind an AI Gateway that supports: (a) single-filing Q&A with citations, (b) cross-company supervisor fan-out, (c) hybrid keyword + semantic retrieval with re-ranking.
+- **FR-007**: System MUST expose an agent endpoint behind an AI Gateway that supports: (a) single-filing Q&A with citations, (b) cross-company supervisor fan-out, (c) hybrid keyword + semantic retrieval with re-ranking. End-to-end response time MUST meet P95 ≤ 8s for single-filing questions and P95 ≤ 20s for cross-company supervisor questions.
 - **FR-008**: System MUST render answers in a Databricks App UI with inline citations linking to source filename + section, plus a feedback widget (thumbs up/down + comment).
 - **FR-009**: System MUST persist conversation history, query logs, and feedback in a transactional store suitable for fast reads/writes alongside the agent serving path.
-- **FR-010**: System MUST evaluate the agent against a curated eval set using an explicit multi-axis scoring framework (Correctness, Latency, Execution, Adherence, Relevance, Safety); failing the configured per-axis thresholds MUST block promotion.
+- **FR-010**: System MUST evaluate the agent against a curated eval set of 30 hand-authored questions (20 P2 single-filing, 10 P3 cross-company) checked into the repo at `evals/dataset.jsonl`, scoring each axis of CLEARS and gating promotion on per-axis thresholds: Correctness ≥ 0.8, Latency p95 ≤ 8s, Execution ≥ 0.95, Adherence ≥ 0.9, Relevance ≥ 0.8, Safety ≥ 0.99. Any failing axis MUST block promotion.
 - **FR-011**: System MUST expose a monitoring dashboard summarizing extraction drift on Gold and a usage dashboard summarizing conversation logs (top queries, content gaps).
 - **FR-012**: System MUST be deployable end-to-end (catalog/schema/volume, pipelines, vector index, agent endpoint, gateway, app, monitors, dashboards) via a single bundle deploy command; two environments (dev, prod) MUST be defined; no resource MAY be created outside the bundle.
 - **FR-013**: System MUST process duplicate uploads idempotently keyed on filename.
@@ -106,6 +116,8 @@ An analyst asks a multi-company question — e.g., "Compare segment revenue betw
 - **SC-006**: Filings that fail the quality rubric are excluded from retrieval 100% of the time and are visible in an audit log with score breakdown.
 - **SC-007**: Every agent answer in the App renders at least one citation when retrieved sources exist; when none exist, the agent explicitly states no grounded source rather than fabricating one.
 - **SC-008**: Re-uploading the same filename produces no duplicate KPI rows on 100% of attempts.
+- **SC-009**: Single-filing agent responses meet P95 ≤ 8 seconds end-to-end; cross-company supervisor responses meet P95 ≤ 20 seconds, measured over a representative load test.
+- **SC-010**: Raw PDFs older than 90 days are purged from the UC volume; Silver/Gold/index data is preserved across the purge.
 
 ## Assumptions
 
@@ -116,4 +128,5 @@ An analyst asks a multi-company question — e.g., "Compare segment revenue betw
 - Analyst end-users have UC `SELECT` on the configured catalog/schema and execute permission on the agent endpoint via UC identity passthrough.
 - The CLI auth profile on the operator's machine targets a workspace where the bundle can deploy without further policy exceptions.
 - 10-K fiscal year and company name can be reliably extracted from the parsed cover page; if not, `extraction_confidence` reflects the gap and the row remains queryable.
-- A curated eval set of approximately 30 questions (mix of P2 and P3) exists or will be authored as part of implementation; thresholds are tunable in config.
+- A curated eval set of 30 questions (20 P2 + 10 P3) is authored during implementation and checked in at `evals/dataset.jsonl`; CLEARS thresholds are tunable in config but defaults are fixed in FR-010.
+- Raw PDF retention in the UC volume is 90 days; Silver/Gold/index retention is indefinite. Retention is enforced via a UC volume lifecycle rule or a Lakeflow Job, defined in the bundle.
