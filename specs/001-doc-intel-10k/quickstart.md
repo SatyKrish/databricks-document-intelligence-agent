@@ -4,96 +4,101 @@ Goal: from a clean clone, stand up the entire stack on the Databricks `dev` targ
 
 ## Prerequisites
 
-- macOS or Linux, `python` 3.11, `git`, `databricks` CLI ≥ 0.260 (`brew install databricks/tap/databricks`)
+- macOS or Linux, `python` 3.11+, `git`, `databricks` CLI ≥ 0.298 (`brew install databricks/tap/databricks`)
 - A Databricks workspace with: serverless SQL warehouse (AI Functions GA), Mosaic AI Vector Search and Model Serving entitlements, Lakebase enabled
 - An auth profile (`databricks auth login --host <workspace-url>` once); verify with `databricks auth profiles`
+- Local virtualenv: `python -m venv .venv && .venv/bin/pip install -r agent/requirements.txt -r evals/requirements.txt`
 
 ## 1. Configure the bundle
 
+The `dev` target's defaults (in `databricks.yml`) are `catalog=workspace`, `schema=docintel_10k_dev`. Override per the workspace via env vars or `--var`:
+
 ```bash
 cd databricks
-cp databricks.yml.example databricks.yml   # if a template is provided
-databricks bundle validate -t dev \
-  --var catalog=<your_catalog> \
-  --var schema=docintel_10k \
-  --var workspace_host=<your_workspace_host>
+databricks bundle validate --strict -t dev
 ```
 
-If validate prints no errors, every resource yaml is schema-correct.
+If validate prints no errors, every resource YAML is schema-correct.
 
-## 2. Deploy
+## 2. Stand up dev (staged deploy)
 
 ```bash
-databricks bundle deploy -t dev \
-  --var catalog=<your_catalog> \
-  --var schema=docintel_10k \
-  --var workspace_host=<your_workspace_host>
+DOCINTEL_CATALOG=workspace \
+DOCINTEL_SCHEMA=docintel_10k_dev \
+DOCINTEL_WAREHOUSE_ID=<your-warehouse-id> \
+./scripts/bootstrap-dev.sh
 ```
 
-This creates: catalog/schema if absent, the `raw_filings` UC volume, the Lakeflow SDP pipeline, the index-refresh + retention Jobs, the Vector Search endpoint + index, the Lakebase database + 3 tables, the agent serving endpoint behind AI Gateway, the Lakeview dashboard, the Lakehouse Monitor, and the Streamlit App.
+The script implements a 6-step staged deploy:
+
+1. Detect & clean orphan resources from prior failed runs.
+2. **Stage 1**: deploy `resources/foundation/` only (catalog/schema/volume, pipeline, retention job, Lakebase instance) — consumer YAMLs are temp-renamed to `*.yml.skip`.
+3. **Produce data**: upload synthetic samples, run pipeline, register agent model, wait for Lakebase to reach `AVAILABLE`.
+4. **Stage 2**: full `bundle deploy` — consumers (serving endpoint, monitor, VS endpoint, index-refresh job, app, dashboard, Lakebase catalog) attach to the live foundation.
+5. `bundle run analyst_app`; UC grants chain (`USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE`).
+6. Smoke check on the analyst endpoint.
+
+Total time on a fresh workspace: 15–25 minutes.
 
 ## 3. Verify P1 — ingest, parse, extract
 
-Upload a sample SEC 10-K (e.g., `AAPL_10K_2024.pdf` from EDGAR) to the volume:
-
-```bash
-databricks fs cp ./samples/AAPL_10K_2024.pdf \
-  dbfs:/Volumes/<your_catalog>/docintel_10k/raw_filings/
-```
-
-The pipeline trigger fires on file arrival. Wait ~5 minutes, then:
+The bootstrap script already uploaded `samples/{ACME,BETA,GAMMA,garbage}_10K_2024.pdf` and waited for the pipeline. Verify the KPI table:
 
 ```sql
--- in a SQL warehouse query editor or `databricks sql query --warehouse <id>`
 SELECT filename, company_name, fiscal_year, revenue, ebitda,
-       size(top_risks) AS num_risks
-  FROM <your_catalog>.docintel_10k.gold_filing_kpis
- WHERE filename = 'AAPL_10K_2024.pdf';
+       size(top_risks) AS num_risks,
+       size(segment_revenue) AS num_segments
+  FROM workspace.docintel_10k_dev.gold_filing_kpis
+ ORDER BY filename;
 ```
 
-Expect one row with non-null revenue, ebitda, fiscal_year, company_name, and a non-empty `top_risks` array. Confirms SC-001, SC-008.
+Expect 4 rows. ACME/BETA/GAMMA each show non-null revenue (`94.2`, `212.0`, `305.0` $B), non-null ebitda, ≥5 `top_risks`, 3+ `segment_revenue` entries (typed `ARRAY<STRUCT<name STRING, revenue DECIMAL>>`). The `garbage_10K_2024.pdf` row exists but its `quality_score` (visible in `gold_filing_quality`) is below the 22 threshold, so it's excluded from the Vector Search index. Confirms SC-001, SC-006, SC-008.
 
 ## 4. Verify P2 — ask the corpus
 
-Open the deployed App URL printed by `bundle deploy`. Ask:
+Open the deployed App URL (workspace UI → Apps → `doc-intel-analyst-dev`). Ask:
 
-> What were the top 3 risk factors disclosed by Apple in their FY24 10-K?
+> What were the top 3 risk factors disclosed by ACME in their FY24 10-K?
 
-Expect: a grounded answer naming ≥ 3 risks, each with a citation chip linking back to `AAPL_10K_2024.pdf` / `Risk`. Submit thumbs-up; refresh the App; the row should be visible in the feedback panel. Confirms SC-002, SC-007.
+Expect: a grounded answer naming ≥3 risks (macroeconomic conditions, competitive pressure in AI, supply chain concentration), each with a citation chip linking back to `ACME_10K_2024.pdf` / `Risk`. Submit thumbs-up; refresh; the feedback row appears in `lakebase.feedback`. Confirms SC-002, SC-007.
+
+To bring real EDGAR filings online instead of the synthetic samples, see `samples/README.md` — the volume accepts any `*_10K_*.pdf` and the pipeline reacts via Auto Loader (`continuous: true` in prod, `false` in dev).
 
 ## 5. Verify P3 — cross-company
 
-Upload two more filings (e.g., `MSFT_10K_2024.pdf`, `GOOG_10K_2024.pdf`), wait for pipeline runs, then ask:
+The bootstrap already loaded BETA and GAMMA, so cross-company is ready. Ask in the App:
 
-> Compare segment revenue between Apple, Microsoft, and Google in their most recent 10-Ks.
+> Compare segment revenue between ACME, BETA, and GAMMA in their most recent 10-Ks.
 
-Expect: a markdown table with one row per company, segment-revenue values that match `gold_filing_kpis.segment_revenue`, and citations pointing at each filing. Confirms SC-003.
+Expect: a markdown table with one row per company, segment-revenue values matching `gold_filing_kpis.segment_revenue`, citations pointing at each filing. Confirms SC-003.
 
 ## 6. Run CLEARS evaluation
 
 ```bash
-python evals/clears_eval.py \
+DOCINTEL_CATALOG=workspace \
+DOCINTEL_SCHEMA=docintel_10k_dev \
+.venv/bin/python evals/clears_eval.py \
   --endpoint analyst-agent-dev \
-  --dataset evals/dataset.jsonl \
-  --catalog <your_catalog> \
-  --schema docintel_10k
+  --dataset evals/dataset.jsonl
 ```
 
-Exit 0 iff every CLEARS axis meets thresholds (C≥0.8, L p95≤8s, E≥0.95, A≥0.9, R≥0.8, S≥0.99). Confirms FR-010 / SC-002 / SC-003.
+Exit 0 iff every CLEARS axis meets thresholds (C≥0.8, L p95≤8s, E≥0.95, A≥0.9, R≥0.8, S≥0.99). The script uses `mlflow.evaluate(model_type="databricks-agent")` for the LLM-judged axes (correctness, guideline_adherence, chunk_relevance, safety) and computes Execution + Latency from the raw response stream. SC-002 (P2 ≥0.80) and SC-003 (P3 ≥0.70) are sliced from `result.tables['eval_results']`. Confirms FR-010 / SC-002 / SC-003.
 
 ## 7. Tear down
 
 ```bash
-databricks bundle destroy -t dev
+databricks bundle destroy -t dev --auto-approve
 ```
 
-Removes the pipeline, jobs, index, endpoint, app, monitor, dashboard, and Lakebase database. The catalog + volume + Delta tables are preserved unless you also pass `--auto-approve` and explicitly delete them.
+Note: the Lakebase instance enters a soft-delete state for ~7 days during which its name is reserved. To redeploy quickly, bump `lakebase_instance` in `databricks.yml` (e.g., `docintel-dev-state-v4`) before re-running the bootstrap.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `bundle validate` errors on `ai_parse_document` | Workspace lacks AI Functions GA | Ensure SQL warehouse is on a recent serverless channel |
-| `Vector Search index sync` stuck pending | Embedding endpoint not entitled | Provision a Mosaic embedding endpoint or set `embedding_model_endpoint_name` in `resources/vector_search/filings_index.yml` |
-| Agent endpoint 401 from App | Identity passthrough not configured | Verify AI Gateway config in `resources/serving/agent.serving.yml` |
-| CLEARS Latency axis fails | Re-rank window too large | Reduce `top_k` candidates from 25 to 15 in `agent/retrieval.py` |
+| `bundle validate` errors on `ai_parse_document` | Workspace lacks AI Functions GA | Move SQL warehouse to a recent serverless channel |
+| Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
+| Agent endpoint 401 from App | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and the App's `user_api_scopes` includes `serving.serving-endpoints` (workspace must have user-token-passthrough enabled — see `docs/runbook.md` §"Enabling end-to-end OBO") |
+| CLEARS Latency axis fails | Re-rank window too large | Reduce candidate window in `agent/retrieval.py` from 25 to 15 |
+| Bootstrap blocks on Lakebase soft-delete | `lakebase_instance` name held by retention | Bump suffix in `databricks.yml` and retry |
+| `⚠ APP-LEVEL OBO IS OPERATIONALLY DISABLED` banner | Workspace lacks user-token-passthrough feature | Workspace admin enables the feature; uncomment `user_api_scopes` in `resources/consumers/analyst.app.yml`; redeploy |

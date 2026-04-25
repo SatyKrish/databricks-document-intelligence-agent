@@ -63,7 +63,7 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 - [x] T013 [US1] Update `gold_filing_sections` (in T011 or a follow-on view) to add `embed_eligible = (quality_score >= ${var.quality_threshold} AND parse_status = 'ok')` by joining with `gold_filing_quality`
 - [x] T014 [US1] Define the Lakeflow SDP in `resources/pipelines/doc_intel.pipeline.yml`: serverless, libraries point at `pipelines/sql/*.sql`, target = `${var.catalog}.${var.schema}`, file-arrival event trigger on the `raw_filings` volume, retries=2 (depends on T009-T013)
 - [x] T015 [US1] Define the retention Lakeflow Job in `resources/jobs/retention.job.yml`: daily schedule, single Python task that lists the volume via `WorkspaceClient.files`, removes files with `modificationTime < now()-90d`, logs deletions; uses Service Principal in prod only (depends on T006)
-- [x] T016 [US1] Add a sample `samples/AAPL_10K_2024.pdf` (≤25 MB EDGAR PDF) checked into the repo for smoke-tests; document its provenance in `samples/README.md`
+- [x] T016 [US1] Add synthetic samples (`samples/{ACME,BETA,GAMMA}_10K_2024.pdf` + `samples/garbage_10K_2024.pdf` for SC-006) reproducible from `samples/synthesize.py`; documented in `samples/README.md`
 - [x] T017 [US1] Write a Lakeview `resources/dashboards/usage.lvdash.yml` containing one initial widget over `gold_filing_kpis` (count by company_name, count by fiscal_year); will be extended in US2/US3 (depends on T011)
 
 **Checkpoint**: P1 acceptance scenarios 1–4 pass via the quickstart commands.
