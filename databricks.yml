@@ -60,17 +60,22 @@ targets:
       pipelines:
         doc_intel_pipeline:
           development: true
+          # Dev override: triggered runs only, to avoid a continuously-running
+          # serverless cluster during smoke iterations. Prod inherits
+          # continuous: true from resources/pipelines/doc_intel.pipeline.yml.
+          continuous: false
 
   prod:
     mode: production
     workspace:
       profile: DEFAULT
       root_path: /Workspace/Shared/.bundle/${bundle.name}/prod
-    # In production mode DABs require run_as. v1 dev deploys only — when activating
-    # prod, set var.service_principal_id and uncomment the block below (or override
-    # via `--var service_principal_id=...` on deploy).
-    # run_as:
-    #   service_principal_name: ${var.service_principal_id}
+    # Constitution VI + skill databricks-dabs: production mode requires a
+    # service-principal `run_as`. `service_principal_id` defaults to "" so
+    # `bundle validate -t prod` fails loudly until set — that's the safety.
+    # Override via `--var service_principal_id=<sp-app-id>` on deploy.
+    run_as:
+      service_principal_name: ${var.service_principal_id}
     variables:
       catalog: workspace
       schema: docintel_10k

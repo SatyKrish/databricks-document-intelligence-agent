@@ -59,7 +59,10 @@ Failures are logged as a JSON list under the run tag `failures`. The script exit
 |---|---|---|
 | `bundle validate` fails on `ai_parse_document` | Workspace lacks AI Functions GA | Move SQL warehouse to a recent serverless channel |
 | Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
-| Agent endpoint 401 | AI Gateway identity passthrough mis-config | Verify `ai_gateway` block in `resources/serving/agent.serving.yml` |
+| Agent endpoint 401 | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and `resources/apps/analyst.app.yml:user_api_scopes` includes `sql` |
+| Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (skill `databricks-apps/references/platform-guide.md` §"Destructive Updates") | Re-apply: `databricks apps update doc-intel-analyst-dev --user-api-scopes sql,iam.access-control:read,iam.current-user:read` |
+| Streamlit user sees stale UC permissions | OBO token captured at WebSocket open; never refreshes (skill §8) | Reload the page after permission changes |
+| Lakebase tables not writable from deployed App | Local-dev `streamlit run` initialised schema under user identity, not App SP | Connect as App SP and `DROP TABLE feedback, query_logs, conversation_history`; next App run re-creates them under SP. See `app/README.md` |
 | CLEARS Latency axis fails | Re-rank window too large | Reduce candidate window in `agent/retrieval.py` from 25 to 15 |
 | App errors connecting to Lakebase | Database resource binding missing Postgres env vars | Check the `docintel-lakebase` resource binding and `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` in the App runtime |
 

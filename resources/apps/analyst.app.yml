@@ -4,6 +4,10 @@ resources:
       name: doc-intel-analyst-${bundle.target}
       description: "10-K Analyst — chat over indexed filings with citations"
       source_code_path: ../../app
+
+      # Skill: databricks-apps/references/platform-guide.md §"Service Principal
+      # Permissions" — declaring resources here auto-grants the listed
+      # permission to the App SP on deploy. Do NOT also grant manually.
       resources:
         - name: docintel-lakebase
           database:
@@ -14,3 +18,13 @@ resources:
           serving_endpoint:
             name: analyst-agent-${bundle.target}
             permission: CAN_QUERY
+
+      # Skill: databricks-apps/references/platform-guide.md §"Authentication".
+      # Without `sql` scope, `WorkspaceClient(token=user_token)` cannot run UC
+      # SQL queries on behalf of the user even if the user has UC SELECT.
+      # `iam.*` defaults are listed explicitly so we can spot if a future
+      # `bundle run` wipes them (skill §"Destructive Updates Warning").
+      user_api_scopes:
+        - sql
+        - iam.access-control:read
+        - iam.current-user:read

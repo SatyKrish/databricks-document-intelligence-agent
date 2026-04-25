@@ -12,6 +12,7 @@ import uuid
 
 import streamlit as st
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.config import Config
 
 from app import lakebase_client
 
@@ -20,8 +21,32 @@ AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set via resource bindi
 
 
 @st.cache_resource
-def _client() -> WorkspaceClient:
+def _sp_client() -> WorkspaceClient:
+    """Service-principal-scoped client for app-owned operations (Lakebase init, etc.)."""
     return WorkspaceClient()
+
+
+@st.cache_resource(ttl=3600)
+def _user_client(token: str | None) -> WorkspaceClient:
+    """User-scoped (OBO) client built from the request's x-forwarded-access-token.
+
+    Skill: databricks-apps/references/other-frameworks.md §3 + platform-guide.md §Authentication.
+    Streamlit gotcha (skill §8): the OBO token is captured at the initial HTTP
+    request, then the connection switches to WebSocket — the token never refreshes.
+    Long-lived sessions should reload the page after permission changes.
+
+    `token=None` → SP fallback (local dev, or unauthenticated requests).
+    """
+    if not token:
+        return _sp_client()
+    return WorkspaceClient(config=Config(
+        host=os.environ["DATABRICKS_HOST"],
+        token=token,
+    ))
+
+
+def _agent_client() -> WorkspaceClient:
+    return _user_client(st.context.headers.get("x-forwarded-access-token"))
 
 
 def _user_email() -> str:
@@ -30,7 +55,7 @@ def _user_email() -> str:
 
 def _query_agent(question: str, conversation_id: str) -> dict:
     try:
-        out = _client().serving_endpoints.query(
+        out = _agent_client().serving_endpoints.query(
             name=AGENT_ENDPOINT,
             inputs=[{"question": question, "conversation_id": conversation_id, "top_k": 5}],
         )

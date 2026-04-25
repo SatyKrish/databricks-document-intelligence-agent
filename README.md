@@ -6,7 +6,7 @@ A **Databricks-native document intelligence + agent** stack that turns SEC 10-K 
 
 ```
    SEC 10-K PDF                       Analyst's question
-   (e.g., AAPL_10K.pdf)               "What were Apple's top 3 risks in FY24?"
+   (e.g., ACME_10K_2024.pdf)          "What were ACME's top 3 risks in FY24?"
         │                                          │
         ▼                                          ▼
    ┌─────────────────────┐              ┌──────────────────────┐
@@ -27,7 +27,7 @@ A **Databricks-native document intelligence + agent** stack that turns SEC 10-K 
 
 A research analyst's assistant for SEC 10-K annual reports. Drop a PDF into a governed Unity Catalog volume; within ~10 minutes the system parses it (preserving layout), classifies its sections, extracts a structured KPI record (revenue, EBITDA, top risks, segment revenue), scores its quality on a five-dimension rubric, and indexes high-quality summaries for retrieval.
 
-Once indexed, an analyst opens a Streamlit app on Databricks Apps and asks questions in plain English. The agent retrieves the most relevant filing sections, generates a grounded answer with inline citations, and persists the conversation + thumbs feedback to a Lakebase Postgres database. Cross-company comparisons ("compare segment revenue across AAPL, MSFT, GOOG") are handled by a supervisor agent that fans out per-company queries and renders a markdown table.
+Once indexed, an analyst opens a Streamlit app on Databricks Apps and asks questions in plain English. The agent retrieves the most relevant filing sections, generates a grounded answer with inline citations, and persists the conversation + thumbs feedback to a Lakebase Postgres database. Cross-company comparisons ("compare segment revenue across ACME, BETA, GAMMA") are handled by a supervisor agent that fans out per-company queries and renders a markdown table. The repo ships with synthetic 10-Ks (`samples/{ACME,BETA,GAMMA}_10K_2024.pdf` + a low-quality `garbage_10K_2024.pdf` for SC-006 testing) so the corpus is fully reproducible.
 
 The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, evaluation gate — is one **Databricks Asset Bundle (DAB)**. After a one-time bootstrap, `databricks bundle deploy -t dev` recreates everything.
 
@@ -44,16 +44,22 @@ The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, e
 
   raw_filings/       ┌─────────────────┐   ┌─────────────────┐   ┌──────────────────┐
   ACME_10K.pdf  ──▶  │  bronze_filings │──▶│ silver_parsed_  │──▶│ gold_filing_     │
-  AAPL_10K.pdf       │  (raw bytes,    │   │ filings (parsed │   │ sections   ─┐    │
-  …                  │   filename,     │   │ VARIANT —       │   │             │    │
-                     │   ingested_at)  │   │ ai_parse_       │   │ gold_filing_│    │
-                     │                 │   │ document)       │   │ kpis        │    │
-                     │  >50MB rejects: │   │                 │   │ (revenue,   │    │
-                     │  bronze_filings │   │ Status: ok /    │   │  ebitda,    │    │
-                     │  _rejected      │   │ partial / error │   │  top_risks) │    │
-                     └─────────────────┘   └─────────────────┘   └─────────────┴────┘
-                          01_bronze.sql       02_silver_parse      03_gold_classify
-                                                .sql               _extract.sql
+  BETA_10K.pdf       │  (raw bytes,    │   │ filings (parsed │   │ sections (one    │
+  GAMMA_10K.pdf      │   filename,     │   │ VARIANT —       │   │  row per parsed  │
+                     │   ingested_at)  │   │ ai_parse_       │   │  $.sections[*];  │
+                     │                 │   │ document)       │   │  fallback to     │
+                     │  >50MB rejects: │   │                 │   │  full_document   │
+                     │  bronze_filings │   │ Status: ok /    │   │  if absent)      │
+                     │  _rejected      │   │ partial / error │   │                  │
+                     └─────────────────┘   └─────────────────┘   │ gold_filing_kpis │
+                          01_bronze.sql       02_silver_parse    │ (typed columns:  │
+                                                .sql             │  segment_revenue │
+                                                                 │  ARRAY<STRUCT…>, │
+                                                                 │  top_risks       │
+                                                                 │  ARRAY<STRING>)  │
+                                                                 └──────────────────┘
+                                                                  03_gold_classify
+                                                                  _extract.sql
                                                                           │
                                                                           ▼
                                                                  ┌──────────────────┐
@@ -68,6 +74,8 @@ The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, e
 ```
 
 **Key idea — "parse once, extract many":** PDFs are expensive to parse. Silver runs `ai_parse_document` exactly once per file and stores the structured result as a `VARIANT`. Everything downstream — classification, KPI extraction, summarization, quality scoring — reads the parsed output, never the raw bytes. This is a non-negotiable constitution principle.
+
+**Triggering**: prod runs the pipeline in `continuous: true` mode so Auto Loader (`read_files`) reacts to new PDFs in the volume automatically. Dev overrides to `continuous: false` to avoid a 24/7 cluster during smoke iterations. See `resources/pipelines/doc_intel.pipeline.yml` and the dev override block in `databricks.yml`.
 
 ### Vector Search bridges data and agent
 
@@ -123,7 +131,7 @@ The whole stack — pipeline, vector index, agent, app, monitoring, dashboard, e
               └──────────────────────┘
 ```
 
-The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served behind an **AI Gateway** (rate-limiting, identity passthrough, audit logging).
+The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served behind an **AI Gateway** (rate limiting per-user, usage tracking, inference-table audit). Identity passthrough is implemented at the *App layer* — the Streamlit app extracts the user's `x-forwarded-access-token` header and constructs a user-scoped `WorkspaceClient` so any UC SQL the agent runs is governed under the user's identity, not the App SP. See `app/README.md` for the OBO flow.
 
 ### Runtime stack
 
@@ -149,11 +157,18 @@ The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served beh
    │                        │  │  query_logs             │
    │  + AI Gateway:         │  │  feedback               │
    │    rate limit          │  │                        │
-   │    identity passthrough│  │  (Postgres for tiny    │
-   │    audit log           │  │   per-turn writes —    │
-   └────────────────────────┘  │   Delta isn't great    │
-                               │   at row-by-row)       │
-                               └────────────────────────┘
+   │      (per-user key)    │  │  (Postgres for tiny    │
+   │    inference-table     │  │   per-turn writes —    │
+   │      audit             │  │   Delta isn't great    │
+   │    usage tracking      │  │   at row-by-row)       │
+   └────────────────────────┘  └────────────────────────┘
+
+   OBO (user identity end-to-end):
+   ──────────────────────────────
+   App reads `x-forwarded-access-token` from the request, builds
+   `WorkspaceClient(token=...)`, calls the serving endpoint with the
+   user's identity. Agent code's downstream UC SQL runs as the user.
+   AI Gateway logs per-user usage; UC ACLs enforce row/column rules.
 ```
 
 **Why Postgres for state?** Delta tables are great for analytics but bad at "insert one tiny row per chat turn at high frequency." Lakebase is Databricks's managed Postgres — same governance, right tool for the job.

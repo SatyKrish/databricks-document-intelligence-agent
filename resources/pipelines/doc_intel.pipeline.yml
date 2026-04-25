@@ -23,7 +23,11 @@ resources:
         quality_threshold: ${var.quality_threshold}
 
       serverless: true
-      continuous: false
+      # File-arrival semantics (spec FR-001): continuous mode keeps the Auto
+      # Loader source running so new PDFs in the raw_filings volume are picked
+      # up automatically. Dev target overrides this to false in databricks.yml
+      # for cost control on smoke runs.
+      continuous: true
       photon: true
       channel: current
 

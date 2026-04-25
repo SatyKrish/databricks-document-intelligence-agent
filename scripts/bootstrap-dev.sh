@@ -59,12 +59,17 @@ if ! databricks bundle deploy -t "$TARGET"; then
   log "first deploy reported errors — continuing per ordering-gap workaround"
 fi
 
-if [[ -f "$SAMPLE_PDF" ]]; then
-  log "step 2a/5: copying $SAMPLE_PDF to $VOLUME_PATH"
-  databricks fs cp "$SAMPLE_PDF" "$VOLUME_PATH/" --overwrite || \
-    log "fs cp failed — assuming a sample is already present and continuing"
+log "step 2a/5: copying synthetic samples to $VOLUME_PATH"
+shopt -s nullglob
+sample_pdfs=(samples/*_10K_*.pdf)
+shopt -u nullglob
+if (( ${#sample_pdfs[@]} == 0 )); then
+  log "no PDFs in samples/; run samples/synthesize.py to regenerate"
 else
-  log "step 2a/5: no sample PDF at $SAMPLE_PDF; assuming raw_filings already populated"
+  for pdf in "${sample_pdfs[@]}"; do
+    databricks fs cp "$pdf" "$VOLUME_PATH/" --overwrite || \
+      log "fs cp $pdf failed — continuing"
+  done
 fi
 
 log "step 2b/5: triggering pipeline run ($PIPELINE_KEY)"
@@ -72,33 +77,8 @@ databricks bundle run -t "$TARGET" "$PIPELINE_KEY" || \
   die "pipeline run failed — inspect SDP UI before retrying"
 
 log "step 3/5: waiting up to ${WAIT_SECONDS}s for $KPI_TABLE to have >= 1 row"
-deadline=$(( $(date +%s) + WAIT_SECONDS ))
-while :; do
-  count_json=$(databricks api post /api/2.0/sql/statements --json "$(cat <<JSON
-{
-  "warehouse_id": "${DOCINTEL_WAREHOUSE_ID}",
-  "statement": "SELECT count(*) AS n FROM ${KPI_TABLE}",
-  "wait_timeout": "30s",
-  "on_wait_timeout": "CANCEL"
-}
-JSON
-)" 2>/dev/null || echo '{}')
-  n=$(printf '%s' "$count_json" | "$PYTHON" -c 'import json,sys
-try:
-    d=json.load(sys.stdin)
-    rows=d.get("result",{}).get("data_array") or []
-    print(int(rows[0][0]) if rows else 0)
-except Exception:
-    print(0)')
-  if [[ "${n:-0}" -gt 0 ]]; then
-    log "  → $KPI_TABLE has $n row(s); proceeding"
-    break
-  fi
-  if (( $(date +%s) >= deadline )); then
-    die "timed out waiting for $KPI_TABLE; rerun with DOCINTEL_WAIT_SECONDS=<bigger>"
-  fi
-  sleep 15
-done
+"$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
+  die "timed out waiting for $KPI_TABLE; rerun with DOCINTEL_WAIT_SECONDS=<bigger>"
 
 log "step 4/5: registering agent model and repointing $ENDPOINT"
 "$PYTHON" agent/log_and_register.py --target "$TARGET" --serving-endpoint "$ENDPOINT" || \
@@ -107,5 +87,44 @@ log "step 4/5: registering agent model and repointing $ENDPOINT"
 log "step 5/5: final deploy — serving/monitor/app should now resolve cleanly"
 databricks bundle deploy -t "$TARGET"
 
-log "done. Endpoint: $ENDPOINT  |  KPI table: $KPI_TABLE"
-log "next: python evals/clears_eval.py --endpoint $ENDPOINT --dataset evals/dataset.jsonl"
+# Apps deploy: skill databricks-apps/references/platform-guide.md §Deployment
+# Workflow — `bundle deploy` uploads code; the app config + restart needs an
+# explicit `bundle run`.
+log "step 5b/5: applying app config + restart (analyst_app)"
+databricks bundle run -t "$TARGET" analyst_app || \
+  log "warn: analyst_app run failed — fix the app and retry 'databricks bundle run -t $TARGET analyst_app'"
+
+# OBO scope verification: `bundle run` may wipe user_api_scopes
+# (skill platform-guide §"Destructive Updates Warning").
+APP_NAME="doc-intel-analyst-${TARGET}"
+log "step 5c/5: verifying OBO scopes on $APP_NAME"
+databricks apps get "$APP_NAME" --output json > /tmp/docintel-app.json || \
+  log "warn: could not fetch app state for scope verification"
+if [[ -f /tmp/docintel-app.json ]]; then
+  if ! "$PYTHON" -c "
+import json, sys
+app = json.load(open('/tmp/docintel-app.json'))
+scopes = set(app.get('user_api_scopes') or [])
+required = {'sql'}
+missing = required - scopes
+if missing:
+    print(f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})', file=sys.stderr)
+    sys.exit(1)
+print(f'OBO scopes intact: {sorted(scopes)}')
+"; then
+    log "warn: OBO scopes wiped — re-apply via 'databricks apps update $APP_NAME --user-api-scopes sql,iam.access-control:read,iam.current-user:read'"
+  fi
+fi
+
+# Schema-level UC grants (not declarative in DAB as of CLI 0.298 — skill
+# resource-permissions.md only lists volumes for native `grants:`).
+ANALYST_GROUP="${DOCINTEL_ANALYST_GROUP:-account users}"
+log "step 5d/5: applying schema grants for ${ANALYST_GROUP} on ${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}"
+databricks api post \
+  "/api/2.1/unity-catalog/permissions/SCHEMA/${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}" \
+  --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" \
+  >/dev/null 2>&1 || \
+  log "warn: schema grants call failed (may already be applied; UC dedupes)"
+
+log "done. Endpoint: $ENDPOINT  |  KPI table: $KPI_TABLE  |  App: $APP_NAME"
+log "next: $PYTHON evals/clears_eval.py --endpoint $ENDPOINT --dataset evals/dataset.jsonl"

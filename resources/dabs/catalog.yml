@@ -12,13 +12,14 @@ resources:
       name: raw_filings
       volume_type: MANAGED
       comment: "Drop-zone for raw 10-K PDFs. 90-day retention via retention.job.yml."
+      # Skill: databricks-dabs/references/resource-permissions.md — volumes use
+      # `grants` (not `permissions`). Declarative grant for the analyst group.
+      grants:
+        - principal: ${var.analyst_group}
+          privileges:
+            - READ_VOLUME
 
-# UC privilege grants (USE_SCHEMA, SELECT, EXECUTE on schema; READ_VOLUME/WRITE_VOLUME on volume)
-# are NOT a DAB resource type as of CLI 0.298. Apply them post-deploy from a SQL warehouse:
-#
-#   GRANT USE_SCHEMA, SELECT, EXECUTE ON SCHEMA `${var.catalog}`.`${var.schema}`
-#     TO `${var.analyst_group}`;
-#   GRANT READ_VOLUME, WRITE_VOLUME ON VOLUME `${var.catalog}`.`${var.schema}`.`raw_filings`
-#     TO `${var.analyst_group}`;
-#
-# See docs/runbook.md for the full grant script.
+# Schema/catalog grants are not a DAB resource type as of CLI 0.298 — the
+# permissions table in the skill explicitly lists only volumes for `grants`.
+# Schema grants are applied post-deploy by scripts/bootstrap-dev.sh and the
+# CI deploy workflow via the UC permissions API. Idempotent.

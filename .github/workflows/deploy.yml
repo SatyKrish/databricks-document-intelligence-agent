@@ -23,6 +23,13 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DOCINTEL_CATALOG: ${{ vars.DOCINTEL_CATALOG }}
+      DOCINTEL_SCHEMA: ${{ vars.DOCINTEL_SCHEMA }}
+      DOCINTEL_WAREHOUSE_ID: ${{ vars.DOCINTEL_WAREHOUSE_ID }}
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,26 +37,51 @@ jobs:
           python-version: "3.11"
       - name: Install Databricks CLI
         run: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
-      - name: Deploy bundle (dev)
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-        run: databricks bundle deploy -t dev
-      - name: Register agent, assign @dev alias, and update serving endpoint
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          DOCINTEL_CATALOG: ${{ vars.DOCINTEL_CATALOG }}
-          DOCINTEL_SCHEMA: ${{ vars.DOCINTEL_SCHEMA }}
-          DOCINTEL_WAREHOUSE_ID: ${{ vars.DOCINTEL_WAREHOUSE_ID }}
-          PYTHONPATH: ${{ github.workspace }}
+      - name: Install Python deps
         run: |
-          pip install -r agent/requirements.txt
+          pip install -r agent/requirements.txt -r evals/requirements.txt
+
+      - name: Deploy bundle (dev)
+        run: databricks bundle deploy -t dev
+
+      - name: Seed dev volume with synthetic 10-Ks
+        run: |
+          for f in samples/*_10K_*.pdf; do
+            databricks fs cp "$f" \
+              "dbfs:/Volumes/${DOCINTEL_CATALOG}/${DOCINTEL_SCHEMA}/raw_filings/" \
+              --overwrite
+          done
+
+      - name: Trigger pipeline + wait for KPIs
+        run: |
+          databricks bundle run -t dev doc_intel_pipeline
+          python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
+
+      - name: Register agent + repoint serving endpoint
+        run: |
           python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
+
+      - name: Apply post-deploy schema grants (UC API; not DAB-supported for schemas)
+        if: ${{ vars.DOCINTEL_ANALYST_GROUP != '' }}
+        run: |
+          databricks api post \
+            "/api/2.1/unity-catalog/permissions/SCHEMA/${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}" \
+            --json "{\"changes\":[{\"principal\":\"${{ vars.DOCINTEL_ANALYST_GROUP }}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" || true
+
+      - name: Apply app config + restart (canonical apps deploy command)
+        # Skill: databricks-apps/references/platform-guide.md §Deployment Workflow.
+        # `bundle deploy` alone uploads code but doesn't apply config/restart.
+        run: databricks bundle run -t dev analyst_app
+
+      - name: Verify OBO scopes survived deploy
+        # Skill: platform-guide.md §"Destructive Updates Warning" — `bundle run`
+        # may wipe user_api_scopes. Fail loudly so we re-apply.
+        run: |
+          databricks apps get doc-intel-analyst-dev --output json > /tmp/app.json
+          python -c "import json,sys; \
+            app=json.load(open('/tmp/app.json')); \
+            scopes=set(app.get('user_api_scopes') or []); \
+            assert 'sql' in scopes, f'OBO scope sql missing — got {scopes}'"
+
       - name: CLEARS evaluation gate
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          DOCINTEL_CATALOG: ${{ vars.DOCINTEL_CATALOG }}
-          DOCINTEL_SCHEMA: ${{ vars.DOCINTEL_SCHEMA }}
         run: python evals/clears_eval.py --endpoint analyst-agent-dev --dataset evals/dataset.jsonl

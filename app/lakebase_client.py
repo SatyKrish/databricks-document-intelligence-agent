@@ -4,16 +4,27 @@ Persists conversation history, query logs, and feedback per the contracts in
 `specs/001-doc-intel-10k/contracts/`. The Databricks App database resource
 binding exposes standard Postgres env vars (PGHOST, PGPORT, PGUSER,
 PGPASSWORD, PGDATABASE).
+
+Skill: databricks-apps/references/appkit/lakebase.md — initialize schema at
+startup is the canonical pattern. Tables get owned by whatever Postgres user
+is connected at first init. In deployed mode this is the App SP (because the
+`database` resource binding maps PGUSER to the SP's client_id). In local-dev
+mode this is whoever the developer is authenticated as. To avoid ownership
+divergence, local-dev runs MUST authenticate as the same App SP — see
+app/README.md "Running locally" for the env var contract.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from contextlib import contextmanager
 from typing import Iterator
 
 import psycopg
+
+_log = logging.getLogger(__name__)
 
 
 _SCHEMA = """
@@ -68,7 +79,23 @@ def _conn() -> Iterator[psycopg.Connection]:
 
 
 def init_schema() -> None:
+    """Idempotent CREATE TABLE IF NOT EXISTS. Logs the connected role so
+    deployed-vs-local identity divergence is debuggable from app logs.
+    """
     with _conn() as c, c.cursor() as cur:
+        cur.execute("SELECT current_user")
+        row = cur.fetchone()
+        connected_user = row[0] if row else "<unknown>"
+        expected_sp = os.environ.get("DATABRICKS_CLIENT_ID")
+        if expected_sp and connected_user != expected_sp:
+            _log.warning(
+                "Lakebase init connected as %r; expected App SP %r. "
+                "Tables created in this run will be owned by the wrong principal "
+                "and may not be writable from the deployed App. See app/README.md.",
+                connected_user, expected_sp,
+            )
+        else:
+            _log.info("Lakebase init connected as %r", connected_user)
         cur.execute(_SCHEMA)
 
 

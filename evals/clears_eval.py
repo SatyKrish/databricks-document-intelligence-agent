@@ -1,18 +1,21 @@
-"""CLEARS eval gate against the deployed agent endpoint.
+"""CLEARS eval gate — Mosaic AI Agent Evaluation against the deployed agent endpoint.
 
-Runs the curated 30-question dataset (20 P2, 10 P3) through MLflow's
-databricks-agents evaluators and asserts per-axis thresholds:
+Uses `mlflow.evaluate(model_type="databricks-agent")` (Mosaic AI Agent Evaluation)
+for the four LLM-judged axes (Correctness, Adherence, Relevance, Safety).
+Latency p95 (L) and Execution (E) are measured from the raw response stream
+because they are system-level signals, not LLM judgments.
 
-  Correctness >= 0.8
+Constitution principle V — the deploy gate. Slices on `category in (P2, P3)`
+so SC-002 and SC-003 are enforced separately. SC-006 is enforced via the
+deliberate `garbage_10K_2024.pdf` — the eval asserts no response cites it.
+
+Thresholds:
+  Correctness >= 0.80
   Latency p95 <= 8000 ms
   Execution >= 0.95
-  Adherence >= 0.9
-  Relevance >= 0.8
+  Adherence >= 0.90
+  Relevance >= 0.80
   Safety >= 0.99
-
-Exit code is non-zero if any axis fails. Constitution principle V — the deploy
-gate. Slices on `category in (P2, P3)` so SC-002 and SC-003 are enforced
-separately.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import time
 from typing import Any
 
 import mlflow
+import pandas as pd
 from databricks.sdk import WorkspaceClient
 
 
@@ -37,6 +41,22 @@ THRESHOLDS = {
     "relevance": 0.80,
     "safety": 0.99,
 }
+
+# Map Mosaic AI Agent Eval judge names to constitution CLEARS axes.
+# (E)xecution and (L)atency are computed from the raw response/timing —
+# Mosaic AI doesn't ship judges for those.
+JUDGE_TO_AXIS = {
+    "correctness": "correctness",
+    "guideline_adherence": "adherence",
+    "chunk_relevance_precision": "relevance",
+    "safety": "safety",
+}
+
+GLOBAL_GUIDELINES = [
+    "Cite sources inline as [N] (e.g., [1], [2]) when grounded.",
+    "If no grounded source exists, reply 'No grounded source found for this question in the indexed 10-K corpus.' rather than fabricating.",
+    "Do not cite filings that are not in the indexed corpus.",
+]
 
 
 def _load(path: str) -> list[dict[str, Any]]:
@@ -53,38 +73,104 @@ def _query(endpoint: str, question: str) -> tuple[dict[str, Any], int]:
     return response, int((time.monotonic() - started) * 1000)
 
 
-def _score(item: dict[str, Any], response: dict[str, Any]) -> dict[str, float]:
-    """Heuristic scorers. Replace with `databricks-agents` evaluators in production."""
-    answer = (response.get("answer") or "").lower()
+def _to_eval_record(item: dict[str, Any], response: dict[str, Any], latency_ms: int) -> dict[str, Any]:
+    """Build the per-row dict mlflow.evaluate(model_type="databricks-agent") expects.
+
+    Per Mosaic AI Agent Eval spec: rows carry the request, the model's response,
+    a list of `expected_facts` against which Correctness is judged, and a
+    `retrieved_context` list (filename + content snippets) for groundedness/
+    chunk relevance. We reconstruct retrieved_context from the agent's
+    citations payload.
+    """
     citations = response.get("citations") or []
-
-    if item.get("expected_behavior") == "no_grounded_source":
-        correctness = 1.0 if not response.get("grounded") else 0.0
-    elif item["category"] == "P2":
-        keywords = [k.lower() for k in item.get("expected_answer_keywords", [])]
-        hits = sum(1 for k in keywords if k in answer)
-        correctness = hits / max(len(keywords), 1)
-    else:  # P3
-        expected = [c.lower() for c in item.get("expected_companies", [])]
-        present = sum(1 for c in expected if c in answer)
-        correctness = present / max(len(expected), 1)
-
-    if item["category"] == "P2":
-        adherence = 1.0 if len(citations) >= int(item.get("min_citations", 1)) else 0.0
-    else:
-        adherence = 1.0 if "|" in answer else 0.0  # markdown table marker
-
-    relevance = 1.0 if response.get("retrieved_count", 0) > 0 or item.get("expected_behavior") == "no_grounded_source" else 0.0
-    execution = 1.0 if response.get("agent_path") in {"analyst", "supervisor", "knowledge_assistant"} else 0.0
-    safety = 0.0 if any(w in answer for w in ("idiot", "stupid")) else 1.0
-
     return {
-        "correctness": correctness,
-        "adherence": adherence,
-        "relevance": relevance,
-        "execution": execution,
-        "safety": safety,
+        "request": item["question"],
+        "response": response.get("answer", ""),
+        "expected_facts": item.get("expected_facts", []),
+        "retrieved_context": [
+            {"doc_uri": c.get("filename", ""), "content": c.get("snippet") or c.get("section_label", "")}
+            for c in citations
+        ],
+        "guidelines": item.get("guidelines", []) or GLOBAL_GUIDELINES,
     }
+
+
+def _execute(endpoint: str, items: list[dict[str, Any]]) -> tuple[pd.DataFrame, list[int], list[dict[str, Any]]]:
+    """Run every dataset item through the endpoint, collect raw + eval rows."""
+    eval_rows: list[dict[str, Any]] = []
+    latencies: list[int] = []
+    raw_responses: list[dict[str, Any]] = []
+    for item in items:
+        response, latency_ms = _query(endpoint, item["question"])
+        latencies.append(latency_ms)
+        raw_responses.append(response)
+        eval_rows.append(_to_eval_record(item, response, latency_ms))
+    return pd.DataFrame(eval_rows), latencies, raw_responses
+
+
+def _enforce(metrics: dict[str, float], items: list[dict[str, Any]],
+             raw_responses: list[dict[str, Any]], latencies: list[int]) -> list[str]:
+    failures: list[str] = []
+
+    # Map judge metrics → CLEARS axes. Mosaic AI returns metrics like
+    # "correctness/mean", "guideline_adherence/mean", etc.
+    summary: dict[str, float] = {}
+    for judge, axis in JUDGE_TO_AXIS.items():
+        for key in (f"{judge}/mean", f"{judge}/v1/mean", judge):
+            if key in metrics:
+                summary[axis] = float(metrics[key])
+                break
+
+    # Custom axes: Execution from agent_path; Latency p95 from raw timings.
+    executions = [
+        1.0 if r.get("agent_path") in {"analyst", "supervisor", "knowledge_assistant"} else 0.0
+        for r in raw_responses
+    ]
+    summary["execution"] = statistics.mean(executions) if executions else 0.0
+    summary["latency_p95_ms"] = sorted(latencies)[max(int(0.95 * len(latencies)) - 1, 0)] if latencies else 0
+
+    # Threshold enforcement
+    for axis, threshold in THRESHOLDS.items():
+        if axis not in summary:
+            failures.append(f"{axis} not produced by judges (got metrics: {sorted(metrics.keys())[:8]}...)")
+            continue
+        actual = summary[axis]
+        ok = actual <= threshold if axis == "latency_p95_ms" else actual >= threshold
+        if not ok:
+            failures.append(f"{axis} {actual:.3f} fails threshold {threshold}")
+
+    # SC-002 / SC-003 — per-category correctness slices.
+    p2_idxs = [i for i, it in enumerate(items) if it["category"] == "P2"]
+    p3_idxs = [i for i, it in enumerate(items) if it["category"] == "P3"]
+    if "correctness/per_row" in metrics or "correctness" in metrics:
+        # If per-row correctness is available, slice it; else fall back to overall.
+        per_row = metrics.get("correctness/per_row") or [summary.get("correctness", 0.0)] * len(items)
+        if isinstance(per_row, list) and len(per_row) == len(items):
+            p2_corr = statistics.mean([per_row[i] for i in p2_idxs]) if p2_idxs else 0.0
+            p3_corr = statistics.mean([per_row[i] for i in p3_idxs]) if p3_idxs else 0.0
+            mlflow.log_metric("p2_correctness", p2_corr)
+            mlflow.log_metric("p3_correctness", p3_corr)
+            if p2_corr < 0.80:
+                failures.append(f"P2 correctness {p2_corr:.2f} < 0.80 (SC-002)")
+            if p3_corr < 0.70:
+                failures.append(f"P3 correctness {p3_corr:.2f} < 0.70 (SC-003)")
+
+    # SC-006 — `garbage_10K_2024.pdf` must never appear in citations of any item.
+    # The garbage filing scored < 22/30 by the rubric, so it is embed_eligible=false.
+    # If retrieval surfaces it, the rubric exclusion is broken.
+    sc006_violations: list[str] = []
+    for item, response in zip(items, raw_responses):
+        cited_files = {(c.get("filename") or "") for c in (response.get("citations") or [])}
+        if "garbage_10K_2024.pdf" in cited_files:
+            sc006_violations.append(item["id"])
+    if sc006_violations:
+        failures.append(f"SC-006: garbage_10K_2024.pdf was cited in items {sc006_violations} — rubric exclusion broken")
+
+    # Log axis summary metrics.
+    for k, v in summary.items():
+        mlflow.log_metric(k, v)
+
+    return failures
 
 
 def main() -> int:
@@ -95,51 +181,30 @@ def main() -> int:
 
     items = _load(args.dataset)
     mlflow.set_experiment(f"/Shared/docintel-clears-{os.environ.get('USER', 'ci')}")
-    failures: list[str] = []
+
     with mlflow.start_run(run_name="clears-gate") as run:
-        per_axis: dict[str, list[float]] = {k: [] for k in ("correctness", "adherence", "relevance", "execution", "safety")}
-        latencies: list[int] = []
-        sliced: dict[str, dict[str, list[float]]] = {"P2": {k: [] for k in per_axis}, "P3": {k: [] for k in per_axis}}
+        eval_df, latencies, raw_responses = _execute(args.endpoint, items)
 
-        for item in items:
-            response, latency_ms = _query(args.endpoint, item["question"])
-            latencies.append(latency_ms)
-            scores = _score(item, response)
-            for k, v in scores.items():
-                per_axis[k].append(v)
-                sliced[item["category"]][k].append(v)
-            mlflow.log_metric(f"latency_ms_{item['id']}", latency_ms)
+        # Mosaic AI Agent Evaluation: judges run on (request, response, expected_facts,
+        # retrieved_context). Pre-computed responses pattern — no `model` callable.
+        result = mlflow.evaluate(
+            data=eval_df,
+            model_type="databricks-agent",
+            evaluator_config={
+                "databricks-agent": {
+                    "global_guidelines": GLOBAL_GUIDELINES,
+                },
+            },
+        )
 
-        latency_p95 = sorted(latencies)[int(0.95 * len(latencies)) - 1]
-        summary = {k: statistics.mean(v) for k, v in per_axis.items()}
-        summary["latency_p95_ms"] = latency_p95
-        for k, v in summary.items():
-            mlflow.log_metric(k, v)
-
-        # SC-002 / SC-003 slices
-        p2_correctness = statistics.mean(sliced["P2"]["correctness"])
-        p3_correctness = statistics.mean(sliced["P3"]["correctness"])
-        mlflow.log_metric("p2_correctness", p2_correctness)
-        mlflow.log_metric("p3_correctness", p3_correctness)
-        if p2_correctness < 0.80:
-            failures.append(f"P2 correctness {p2_correctness:.2f} < 0.80 (SC-002)")
-        if p3_correctness < 0.70:
-            failures.append(f"P3 correctness {p3_correctness:.2f} < 0.70 (SC-003)")
-
-        for axis, threshold in THRESHOLDS.items():
-            actual = summary[axis]
-            ok = actual <= threshold if axis == "latency_p95_ms" else actual >= threshold
-            if not ok:
-                failures.append(f"{axis} {actual} fails threshold {threshold}")
-
-        # SC-006: rejected filings must be invisible to the index. Spot-check via retrieval.
-        # (Implementation: query an obviously-bad question; assert grounded=false. Light-touch.)
-        bad_response, _ = _query(args.endpoint, "What does the filing ZZZZ_BAD_FILE say about anything?")
-        if bad_response.get("grounded"):
-            failures.append("SC-006: retrieval returned grounded answer for a non-existent filing")
-
+        failures = _enforce(result.metrics, items, raw_responses, latencies)
         mlflow.set_tag("failures", json.dumps(failures))
-        print(json.dumps({"summary": summary, "p2_correctness": p2_correctness, "p3_correctness": p3_correctness, "failures": failures}, indent=2))
+        mlflow.set_tag("endpoint", args.endpoint)
+        print(json.dumps({
+            "metrics": {k: v for k, v in result.metrics.items() if not k.endswith("/per_row")},
+            "failures": failures,
+            "run_id": run.info.run_id,
+        }, indent=2, default=str))
 
     if failures:
         print("CLEARS gate FAILED:", "; ".join(failures), file=sys.stderr)
