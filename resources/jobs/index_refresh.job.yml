@@ -19,9 +19,9 @@ resources:
               - "--index"
               - ${var.catalog}.${var.schema}.filings_summary_idx
               - "--source-table"
-              - ${var.catalog}.${var.schema}.gold_filing_sections
+              - ${var.catalog}.${var.schema}.gold_filing_sections_indexable
               - "--primary-key"
-              - filename
+              - section_uid
               - "--embedding-endpoint"
               - ${var.embedding_model_endpoint_name}
           environment_key: sync_env

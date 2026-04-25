@@ -56,10 +56,13 @@ SELECT
   current_timestamp()                            AS scored_at
 FROM scored;
 
--- Index source view: gold sections joined with quality and the embed_eligible flag.
--- Vector Search index in jobs/index_refresh/sync_index.py syncs from this table.
--- Materialized as a regular table with CDF enabled so Delta-Sync can track changes.
-CREATE OR REFRESH MATERIALIZED VIEW gold_filing_sections_indexable
+-- Index source: gold sections joined with quality, filtered to embed_eligible only.
+-- Streaming table (not MV) because Vector Search Delta-Sync needs a source it
+-- can track via Change Data Feed; CDF is unsupported on materialized views.
+-- Stream-static join: gold_filing_sections is the streaming side, gold_filing_quality
+-- (MV) is the static lookup. The WHERE clause enforces FR-005 / SC-006: only sections
+-- at or above the quality threshold reach the index.
+CREATE OR REFRESH STREAMING TABLE gold_filing_sections_indexable
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
 AS
 SELECT
@@ -70,7 +73,7 @@ SELECT
   s.section_label,
   s.summary,
   q.quality_score
-FROM gold_filing_sections s
+FROM STREAM(gold_filing_sections) s
 LEFT JOIN gold_filing_quality q
   ON s.filename = q.filename AND s.section_seq = q.section_seq
 WHERE q.quality_score >= ${quality_threshold} AND s.parse_status = 'ok';

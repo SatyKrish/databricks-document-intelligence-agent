@@ -4,7 +4,10 @@ command:
   - app/app.py
 
 env:
+  # Resolved at runtime from the resource bindings declared in
+  # resources/apps/analyst.app.yml. The bindings are target-aware
+  # (analyst-agent-${bundle.target}) so dev and prod stay isolated.
   - name: DOCINTEL_AGENT_ENDPOINT
-    value: analyst-agent-dev
+    valueFrom: agent-endpoint
   - name: DOCINTEL_LAKEBASE_DSN
-    valueFrom: docintel/lakebase_dsn
+    valueFrom: docintel-lakebase

@@ -36,19 +36,25 @@ def fetch_kpis(filename: str) -> dict[str, Any] | None:
 
 
 def fetch_kpis_for_companies(companies: list[str]) -> list[dict[str, Any]]:
-    """Best-match filename lookup per company. Used by the supervisor for cross-company comparison."""
+    """Best-match per-company KPI lookup. Matches against company_name AND filename to
+    handle both human-named filings ("Apple") and ticker-prefixed filenames
+    ("AAPL_10K_2024.pdf"). Used by the supervisor for cross-company comparison.
+    """
     if not companies:
         return []
     w = WorkspaceClient()
-    placeholders = ", ".join(f":c{i}" for i in range(len(companies)))
-    parameters = [
-        {"name": f"c{i}", "value": f"%{c.lower()}%"} for i, c in enumerate(companies)
-    ]
+    clauses = []
+    parameters: list[dict[str, str]] = []
+    for i, c in enumerate(companies):
+        needle = f"%{c.lower()}%"
+        clauses.append(f"LOWER(company_name) LIKE :c{i} OR LOWER(filename) LIKE :c{i}")
+        parameters.append({"name": f"c{i}", "value": needle})
+    where = " OR ".join(f"({clause})" for clause in clauses)
     statement = w.statement_execution.execute_statement(
         warehouse_id=WAREHOUSE_ID,
         statement=(
             f"SELECT * FROM {CATALOG}.{SCHEMA}.gold_filing_kpis "
-            f"WHERE LOWER(filename) LIKE ANY ({placeholders}) "
+            f"WHERE {where} "
             "QUALIFY ROW_NUMBER() OVER (PARTITION BY company_name ORDER BY fiscal_year DESC) = 1"
         ),
         parameters=parameters,

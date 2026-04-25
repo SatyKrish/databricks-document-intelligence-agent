@@ -39,6 +39,10 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DOCINTEL_CATALOG: ${{ vars.DOCINTEL_CATALOG }}
+          DOCINTEL_SCHEMA: ${{ vars.DOCINTEL_SCHEMA }}
+          DOCINTEL_WAREHOUSE_ID: ${{ vars.DOCINTEL_WAREHOUSE_ID }}
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           pip install -r agent/requirements.txt
           python agent/log_and_register.py --target dev
@@ -46,4 +50,6 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DOCINTEL_CATALOG: ${{ vars.DOCINTEL_CATALOG }}
+          DOCINTEL_SCHEMA: ${{ vars.DOCINTEL_SCHEMA }}
         run: python evals/clears_eval.py --endpoint analyst-agent-dev --dataset evals/dataset.jsonl

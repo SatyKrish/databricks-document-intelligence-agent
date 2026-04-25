@@ -34,6 +34,24 @@ def test_cross_company_question_routes_to_supervisor() -> None:
     assert out["agent_path"] == "supervisor"
 
 
+def test_apple_revenue_and_ebitda_routes_to_analyst() -> None:
+    """Regression: 'and' + capitalized metric tokens shouldn't trigger supervisor.
+    Without the routing stop list, 'What are Apple's revenue and EBITDA?' would
+    be misrouted because EBITDA / What count as company candidates.
+    """
+    from agent.analyst_agent import _is_cross_company
+
+    assert _is_cross_company("What are Apple's revenue and EBITDA?") is False
+    assert _is_cross_company("How did Microsoft describe AI risks?") is False
+
+
+def test_compare_two_companies_routes_to_supervisor() -> None:
+    from agent.analyst_agent import _is_cross_company
+
+    assert _is_cross_company("Compare segment revenue between Apple and Microsoft") is True
+    assert _is_cross_company("Apple vs Google operating income") is True
+
+
 def test_single_company_question_uses_analyst_path(monkeypatch) -> None:
     from agent.analyst_agent import AnalystAgent
     from agent.retrieval import Citation

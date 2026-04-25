@@ -24,7 +24,18 @@ from agent.retrieval import Citation
 FOUNDATION_MODEL = os.environ.get("DOCINTEL_FOUNDATION_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct")
 NO_SOURCE_MESSAGE = "No grounded source found for this question in the indexed 10-K corpus."
 
-_COMPARE_TOKENS = (" vs ", " versus ", "compare", "between", "across", " and ")
+_COMPARE_TOKENS = (" vs ", " versus ", "compare", "between", "across")
+
+# Capitalized tokens that aren't company names. Without this, "What are Apple's
+# revenue and EBITDA?" mis-routes to the supervisor because EBITDA, What, etc.
+# count as candidate companies.
+_ROUTING_STOP_TOKENS = {
+    "what", "which", "how", "why", "when", "where", "who",
+    "the", "and", "but", "for", "with", "their", "most", "recent",
+    "between", "across", "compare", "vs", "versus", "fy", "fiscal", "year",
+    "ebitda", "revenue", "kpis", "kpi", "10-k", "10k", "form",
+    "company", "companies", "corp", "inc", "ltd", "llc",
+}
 
 
 class AnalystAgent(mlflow.pyfunc.PythonModel):
@@ -142,8 +153,14 @@ def _coerce_request(model_input: Any) -> dict[str, Any]:
 
 
 def _is_cross_company(question: str) -> bool:
+    """Return True only when the question is a comparison AND mentions ≥ 2 plausible
+    company tokens. The capitalized-token heuristic strips question words, financial
+    metric names, and form-name boilerplate so a single-company question like
+    "What are Apple's revenue and EBITDA?" stays on the analyst path.
+    """
     lowered = question.lower()
     if not any(token in lowered for token in _COMPARE_TOKENS):
         return False
     capitalized = re.findall(r"\b[A-Z][A-Za-z][A-Za-z0-9&\.\-]+\b", question)
-    return len({w for w in capitalized if w.lower() not in {"the", "and", "between", "across"}}) >= 2
+    candidates = {w for w in capitalized if w.lower() not in _ROUTING_STOP_TOKENS}
+    return len(candidates) >= 2

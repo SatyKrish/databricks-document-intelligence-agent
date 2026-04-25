@@ -16,7 +16,7 @@ from databricks.sdk import WorkspaceClient
 from app import lakebase_client
 
 
-AGENT_ENDPOINT = os.environ.get("DOCINTEL_AGENT_ENDPOINT", "analyst-agent-dev")
+AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set via resource binding in resources/apps/analyst.app.yml
 
 
 @st.cache_resource
