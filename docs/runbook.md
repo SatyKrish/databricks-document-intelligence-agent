@@ -119,25 +119,19 @@ resolve on a fresh workspace. Each needs a phase-2 step after a prior side effec
      usually succeeds since the instance is then ready.
    - **Fix**: `bundle deploy -t dev` twice on first stand-up, or add a wait task.
 
-A clean fresh-workspace bring-up sequence:
+A clean fresh-workspace bring-up is now a single command:
 
 ```bash
-# 1. Initial deploy. Expect 3 errors: serving, monitor, app.
-DATABRICKS_BUNDLE_ENGINE=direct databricks bundle deploy -t dev
-
-# 2. Apply UC grants.
-databricks api post /api/2.1/unity-catalog/permissions/SCHEMA/<catalog>.<schema> \
-  --json '{"changes":[{"principal":"<analyst_group>","add":["USE_SCHEMA","SELECT","EXECUTE"]}]}'
-
-# 3. Drop a sample 10-K into the volume; trigger pipeline; wait for gold_filing_kpis.
-
-# 4. Register the agent model and assign @dev alias.
-DOCINTEL_CATALOG=<catalog> DOCINTEL_SCHEMA=<schema> python agent/log_and_register.py --target dev
-
-# 5. Re-deploy. Serving + monitor + app should all succeed now.
-DATABRICKS_BUNDLE_ENGINE=direct databricks bundle deploy -t dev
+DOCINTEL_CATALOG=<catalog> \
+DOCINTEL_SCHEMA=<schema> \
+DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
+./scripts/bootstrap-dev.sh
 ```
 
-A future iteration should fold steps 2–5 into the `.github/workflows/deploy.yml`
-or a dedicated `scripts/bootstrap-dev.sh` so a single command re-creates the
-entire stack.
+The script orchestrates: first deploy (errors tolerated) → upload sample PDF →
+trigger pipeline → wait for `gold_filing_kpis` → register agent + repoint
+serving endpoint → final deploy. UC grants are applied separately via
+`databricks api post /api/2.1/unity-catalog/permissions/...` once per
+workspace and are not re-applied on subsequent runs. CI (`.github/workflows/deploy.yml`)
+calls the same `agent/log_and_register.py --serving-endpoint` step on every
+push to main, so steady-state deploys remain a plain `bundle deploy`.

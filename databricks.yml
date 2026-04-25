@@ -12,8 +12,8 @@ variables:
     description: Lakebase Postgres instance name (must be DNS-compliant — alphanumeric + hyphens only)
     default: docintel-state
   lakebase_stopped:
-    description: Whether the Lakebase Postgres instance should be stopped after deploy
-    default: true
+    description: Whether the Lakebase Postgres instance should be stopped. Must be false on first creation (the API rejects creating directly into stopped state); flip to true after the instance exists if the env should be paused.
+    default: false
   schema:
     description: Schema for all 10-K Analyst resources
     default: docintel_10k

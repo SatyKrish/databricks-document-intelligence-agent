@@ -12,7 +12,7 @@ import sys
 
 import mlflow
 from mlflow.models.signature import ModelSignature
-from mlflow.types.schema import ColSpec, Schema
+from mlflow.types.schema import AnyType, ColSpec, Schema
 from databricks.sdk import WorkspaceClient
 
 from agent.analyst_agent import AnalystAgent
@@ -28,24 +28,52 @@ def _signature() -> ModelSignature:
             ColSpec("string", "conversation_id"),
         ]
     )
-    # Do not declare outputs here. The pyfunc returns a rich JSON-like dict
-    # (answer, grounded, citations, latency_ms, turn_id, etc.); an underspecified
-    # output schema causes serving-time validation/truncation failures.
-    return ModelSignature(inputs=inputs)
+    # UC requires both inputs and outputs in the signature. citations is an
+    # array of dicts whose shape varies between analyst and supervisor paths,
+    # so declare it as AnyType to avoid serving-time truncation of the nested
+    # structure while still satisfying UC's "outputs declared" check.
+    outputs = Schema(
+        [
+            ColSpec("string", "answer"),
+            ColSpec("boolean", "grounded"),
+            ColSpec("long", "latency_ms"),
+            ColSpec("long", "retrieved_count"),
+            ColSpec("string", "agent_path"),
+            ColSpec("string", "conversation_id"),
+            ColSpec("string", "turn_id"),
+            ColSpec(AnyType(), "citations"),
+        ]
+    )
+    return ModelSignature(inputs=inputs, outputs=outputs)
 
 
 def _promote_serving_endpoint(endpoint_name: str, model_name: str, version: str) -> None:
     """Point an existing serving endpoint at the newly registered UC model version.
 
     DAB alias syntax has been unreliable for this endpoint, so CI registers the
-    model and then updates the served entity explicitly.
+    model and then updates the served entity explicitly. On first bring-up the
+    endpoint may not yet exist (the initial deploy can't create it without a
+    model version) — in that case skip silently and let the subsequent
+    `bundle deploy` create it from serving.yml.
     """
     w = WorkspaceClient()
-    endpoint = w.api_client.do("GET", f"/api/2.0/serving-endpoints/{endpoint_name}")
+    try:
+        endpoint = w.api_client.do("GET", f"/api/2.0/serving-endpoints/{endpoint_name}")
+    except Exception as exc:
+        msg = str(exc)
+        if "does not exist" in msg or "RESOURCE_DOES_NOT_EXIST" in msg or "404" in msg:
+            print(f"serving endpoint {endpoint_name!r} does not exist yet; skipping promote (will be created by next bundle deploy)")
+            return
+        raise
     config = endpoint.get("config", {})
     served_entities = config.get("served_entities") or config.get("served_models") or []
     if not served_entities:
-        raise RuntimeError(f"Serving endpoint {endpoint_name!r} has no served entities to update")
+        # Bootstrap edge case: the first `bundle deploy` created the endpoint shell
+        # but the served-entity creation failed (model didn't exist yet). Skip the
+        # in-place update — the subsequent `bundle deploy` reads serving.yml and
+        # populates the served entity from scratch with the bootstrap version.
+        print(f"serving endpoint {endpoint_name!r} has no served entities (likely UPDATE_FAILED on first deploy); skipping promote (next bundle deploy will populate from serving.yml)")
+        return
 
     entity = dict(served_entities[0])
     entity.update({"entity_name": model_name, "entity_version": str(version)})

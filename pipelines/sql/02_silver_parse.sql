@@ -20,7 +20,7 @@ SELECT
     ELSE 'ok'
   END                                          AS parse_status,
   try_variant_get(parsed, '$.metadata.error', 'string') AS parse_error
-FROM silver_with_parsed;
+FROM STREAM(silver_with_parsed);
 
 CREATE FLOW silver_parsed_filings_flow AS AUTO CDC INTO silver_parsed_filings
 FROM STREAM(silver_parsed_filings_changes)

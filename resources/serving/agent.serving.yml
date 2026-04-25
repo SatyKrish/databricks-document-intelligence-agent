@@ -6,7 +6,12 @@ resources:
         served_entities:
           - name: analyst_agent
             entity_name: ${var.catalog}.${var.schema}.analyst_agent
-            entity_version: "2"
+            # Bootstrap creates v1 via agent/log_and_register.py before this deploy
+            # creates the serving endpoint. Steady-state CI re-registers a new
+            # version and calls _promote_serving_endpoint to advance the served
+            # entity in-place (the served version diverges from this YAML over
+            # time — that's intentional; the YAML is just the bootstrap value).
+            entity_version: "1"
             workload_size: Small
             workload_type: CPU
             scale_to_zero_enabled: true
