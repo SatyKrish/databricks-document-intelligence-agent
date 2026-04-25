@@ -44,10 +44,11 @@ def main() -> int:
     mlflow.set_registry_uri("databricks-uc")
     with mlflow.start_run(run_name=f"analyst-agent-{alias}") as run:
         info = mlflow.pyfunc.log_model(
-            artifact_path="analyst_agent",
+            name="analyst_agent",
             python_model=AnalystAgent(),
             registered_model_name=name,
             signature=_signature(),
+            code_paths=["agent"],
             pip_requirements=open("agent/requirements.txt").read().splitlines(),
         )
         version = info.registered_model_version

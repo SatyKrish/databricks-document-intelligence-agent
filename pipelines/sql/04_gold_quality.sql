@@ -57,17 +57,20 @@ SELECT
 FROM scored;
 
 -- Index source view: gold sections joined with quality and the embed_eligible flag.
--- Vector Search index in resources/vector_search/filings_index.yml syncs from this.
-CREATE OR REFRESH MATERIALIZED VIEW gold_filing_sections_indexable AS
+-- Vector Search index in jobs/index_refresh/sync_index.py syncs from this table.
+-- Materialized as a regular table with CDF enabled so Delta-Sync can track changes.
+CREATE OR REFRESH MATERIALIZED VIEW gold_filing_sections_indexable
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+AS
 SELECT
+  CONCAT(s.filename, '#', CAST(s.section_seq AS STRING)) AS section_uid,
   s.filename,
   s.section_seq,
   s.original_label,
   s.section_label,
   s.summary,
-  q.quality_score,
-  q.quality_breakdown,
-  (q.quality_score >= ${quality_threshold} AND s.parse_status = 'ok') AS embed_eligible
+  q.quality_score
 FROM gold_filing_sections s
 LEFT JOIN gold_filing_quality q
-  ON s.filename = q.filename AND s.section_seq = q.section_seq;
+  ON s.filename = q.filename AND s.section_seq = q.section_seq
+WHERE q.quality_score >= ${quality_threshold} AND s.parse_status = 'ok';

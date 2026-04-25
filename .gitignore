@@ -8,3 +8,16 @@
 .idea/
 .vscode/
 *.swp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# MLflow local registry artifacts (used by log_and_register.py during local runs)
+mlflow.db
+mlruns/
+
+# Claude harness
+.claude/scheduled_tasks.lock

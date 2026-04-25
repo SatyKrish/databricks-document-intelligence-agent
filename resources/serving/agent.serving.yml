@@ -4,8 +4,9 @@ resources:
       name: analyst-agent-${bundle.target}
       config:
         served_entities:
-          - entity_name: ${var.catalog}.${var.schema}.analyst_agent
-            entity_version: "@${bundle.target}"
+          - name: analyst_agent
+            entity_name: ${var.catalog}.${var.schema}.analyst_agent
+            entity_version: "2"
             workload_size: Small
             workload_type: CPU
             scale_to_zero_enabled: true
@@ -21,11 +22,6 @@ resources:
           routes:
             - served_model_name: analyst_agent
               traffic_percentage: 100
-        auto_capture_config:
-          enabled: true
-          catalog_name: ${var.catalog}
-          schema_name: ${var.schema}
-          table_name_prefix: agent_inference
 
       ai_gateway:
         usage_tracking_config:

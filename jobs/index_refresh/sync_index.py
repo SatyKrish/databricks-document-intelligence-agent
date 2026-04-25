@@ -38,9 +38,8 @@ def main() -> int:
             source_table_name=args.source_table,
             primary_key=args.primary_key,
             pipeline_type="TRIGGERED",
-            embedding_source_columns=[
-                {"name": "summary", "embedding_model_endpoint_name": args.embedding_endpoint}
-            ],
+            embedding_source_column="summary",
+            embedding_model_endpoint_name=args.embedding_endpoint,
         )
         log.info("index created and initial sync complete")
         return 0
