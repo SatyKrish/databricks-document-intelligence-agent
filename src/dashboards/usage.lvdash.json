@@ -1,0 +1,66 @@
+{
+  "datasets": [
+    {
+      "name": "kpis",
+      "displayName": "Filings KPIs",
+      "queryLines": [
+        "SELECT company_name, fiscal_year, revenue, ebitda, extraction_confidence, extracted_at",
+        "FROM `__dataset_catalog__`.`__dataset_schema__`.gold_filing_kpis"
+      ]
+    },
+    {
+      "name": "ingest_latency",
+      "displayName": "Ingest-to-Gold latency",
+      "queryLines": [
+        "SELECT k.company_name, k.fiscal_year,",
+        "  date_diff('millisecond', b.ingested_at, k.extracted_at) / 1000.0 AS latency_seconds,",
+        "  b.ingested_at, k.extracted_at",
+        "FROM `__dataset_catalog__`.`__dataset_schema__`.gold_filing_kpis k",
+        "JOIN `__dataset_catalog__`.`__dataset_schema__`.bronze_filings b USING (filename)"
+      ]
+    },
+    {
+      "name": "query_logs",
+      "displayName": "Agent query logs",
+      "queryLines": [
+        "SELECT created_at::date AS day, agent_path, count(*) AS turns,",
+        "  percentile_approx(latency_ms, 0.95) AS latency_p95_ms,",
+        "  sum(CASE WHEN array_size(citations) = 0 THEN 1 ELSE 0 END) AS ungrounded",
+        "FROM `__dataset_catalog__`.`__dataset_schema__`_state.public.query_logs",
+        "GROUP BY 1, 2 ORDER BY 1 DESC"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "10-K Analyst Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "kpis_count",
+            "queries": [{"name": "main", "query": {"datasetName": "kpis", "fields": [{"name": "count", "expression": "COUNT(*)"}], "disaggregated": false}}],
+            "spec": {"version": 3, "widgetType": "counter", "encodings": {"value": {"fieldName": "count", "displayName": "Filings indexed"}}}
+          },
+          "position": {"x": 0, "y": 0, "width": 2, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "ingest_latency_p95",
+            "queries": [{"name": "main", "query": {"datasetName": "ingest_latency", "fields": [{"name": "p95", "expression": "PERCENTILE(latency_seconds, 0.95)"}], "disaggregated": false}}],
+            "spec": {"version": 3, "widgetType": "counter", "encodings": {"value": {"fieldName": "p95", "displayName": "Ingest p95 (s) — SLO 600"}}}
+          },
+          "position": {"x": 2, "y": 0, "width": 2, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "ungrounded_rate",
+            "queries": [{"name": "main", "query": {"datasetName": "query_logs", "fields": [{"name": "day", "expression": "day"}, {"name": "ungrounded", "expression": "SUM(ungrounded)"}, {"name": "turns", "expression": "SUM(turns)"}], "disaggregated": false}}],
+            "spec": {"version": 3, "widgetType": "line", "encodings": {"x": {"fieldName": "day", "scale": {"type": "temporal"}}, "y": {"fieldName": "ungrounded", "scale": {"type": "quantitative"}}}}
+          },
+          "position": {"x": 0, "y": 2, "width": 6, "height": 4}
+        }
+      ]
+    }
+  ]
+}

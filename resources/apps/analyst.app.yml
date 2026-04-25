@@ -1,0 +1,16 @@
+resources:
+  apps:
+    analyst_app:
+      name: doc-intel-analyst-${bundle.target}
+      description: "10-K Analyst — chat over indexed filings with citations"
+      source_code_path: ../../app
+      resources:
+        - name: docintel-lakebase
+          database:
+            database_name: ${var.schema}_state
+            instance_name: ${var.schema}_state
+            permission: CAN_CONNECT_AND_CREATE
+        - name: agent-endpoint
+          serving_endpoint:
+            name: analyst-agent-${bundle.target}
+            permission: CAN_QUERY

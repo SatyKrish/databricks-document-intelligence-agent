@@ -1,0 +1,10 @@
+command:
+  - streamlit
+  - run
+  - app/app.py
+
+env:
+  - name: DOCINTEL_AGENT_ENDPOINT
+    value: analyst-agent-dev
+  - name: DOCINTEL_LAKEBASE_DSN
+    valueFrom: docintel/lakebase_dsn

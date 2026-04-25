@@ -1,0 +1,45 @@
+resources:
+  model_serving_endpoints:
+    analyst_agent:
+      name: analyst-agent-${bundle.target}
+      config:
+        served_entities:
+          - entity_name: ${var.catalog}.${var.schema}.analyst_agent
+            entity_version: "@${bundle.target}"
+            workload_size: Small
+            workload_type: CPU
+            scale_to_zero_enabled: true
+            environment_vars:
+              DOCINTEL_CATALOG: ${var.catalog}
+              DOCINTEL_SCHEMA: ${var.schema}
+              DOCINTEL_TARGET: ${bundle.target}
+              DOCINTEL_VS_ENDPOINT: docintel-${bundle.target}
+              DOCINTEL_FOUNDATION_ENDPOINT: ${var.foundation_model_endpoint_name}
+              DOCINTEL_RERANK_ENDPOINT: ${var.rerank_model_endpoint_name}
+              DOCINTEL_WAREHOUSE_ID: "{{secrets/docintel/warehouse_id}}"
+        traffic_config:
+          routes:
+            - served_model_name: analyst_agent
+              traffic_percentage: 100
+        auto_capture_config:
+          enabled: true
+          catalog_name: ${var.catalog}
+          schema_name: ${var.schema}
+          table_name_prefix: agent_inference
+
+      ai_gateway:
+        usage_tracking_config:
+          enabled: true
+        rate_limits:
+          - calls: 60
+            renewal_period: minute
+            key: user
+        inference_table_config:
+          enabled: true
+          catalog_name: ${var.catalog}
+          schema_name: ${var.schema}
+          table_name_prefix: agent_gateway
+
+      permissions:
+        - level: CAN_QUERY
+          group_name: ${var.analyst_group}

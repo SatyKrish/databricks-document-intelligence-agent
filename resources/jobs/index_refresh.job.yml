@@ -1,0 +1,22 @@
+resources:
+  jobs:
+    index_refresh:
+      name: doc-intel-index-refresh-${bundle.target}
+
+      trigger:
+        table_update:
+          table_names:
+            - ${var.catalog}.${var.schema}.gold_filing_sections_indexable
+          condition: ALL_UPDATED
+
+      tasks:
+        - task_key: sync_index
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            query:
+              query: |
+                ALTER VECTOR SEARCH INDEX ${var.catalog}.${var.schema}.filings_summary_idx SYNC
+
+      permissions:
+        - level: CAN_VIEW
+          group_name: ${var.analyst_group}

@@ -1,0 +1,11 @@
+resources:
+  dashboards:
+    usage_dashboard:
+      display_name: 10-K Analyst — Usage & Pipeline Health (${bundle.target})
+      file_path: ../../src/dashboards/usage.lvdash.json
+      warehouse_id: "{{secrets/docintel/warehouse_id}}"
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${var.schema}
+      permissions:
+        - level: CAN_READ
+          group_name: ${var.analyst_group}
