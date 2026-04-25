@@ -24,7 +24,6 @@ resources:
 
       serverless: true
       continuous: false
-      development: true
       photon: true
       channel: current
 

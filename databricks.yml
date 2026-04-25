@@ -11,12 +11,13 @@ variables:
   schema:
     description: Schema for all 10-K Analyst resources
     default: docintel_10k
-  workspace_host:
-    description: Databricks workspace host (https://...)
-    default: ""
   service_principal_id:
     description: Service Principal application ID for prod deploys
     default: ""
+  warehouse_id:
+    description: SQL warehouse used by index-refresh and dashboards
+    lookup:
+      warehouse: Serverless Starter Warehouse
   embedding_model_endpoint_name:
     description: Mosaic AI embedding endpoint used by Vector Search
     default: databricks-bge-large-en
@@ -44,17 +45,25 @@ targets:
     default: true
     mode: development
     workspace:
-      host: ${var.workspace_host}
+      profile: DEFAULT
     variables:
       catalog: main
       schema: docintel_10k_dev
+    resources:
+      pipelines:
+        doc_intel_pipeline:
+          development: true
 
   prod:
     mode: production
     workspace:
-      host: ${var.workspace_host}
-    run_as:
-      service_principal_name: ${var.service_principal_id}
+      profile: DEFAULT
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/prod
+    # In production mode DABs require run_as. v1 dev deploys only — when activating
+    # prod, set var.service_principal_id and uncomment the block below (or override
+    # via `--var service_principal_id=...` on deploy).
+    # run_as:
+    #   service_principal_name: ${var.service_principal_id}
     variables:
       catalog: main
       schema: docintel_10k

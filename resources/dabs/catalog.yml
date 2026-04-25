@@ -13,16 +13,12 @@ resources:
       volume_type: MANAGED
       comment: "Drop-zone for raw 10-K PDFs. 90-day retention via retention.job.yml."
 
-  grants:
-    docintel_analyst_use:
-      securable_type: SCHEMA
-      securable_full_name: ${var.catalog}.${var.schema}
-      grants:
-        - principal: ${var.analyst_group}
-          privileges: [USE_SCHEMA, SELECT, EXECUTE]
-    docintel_analyst_volume:
-      securable_type: VOLUME
-      securable_full_name: ${var.catalog}.${var.schema}.raw_filings
-      grants:
-        - principal: ${var.analyst_group}
-          privileges: [READ_VOLUME, WRITE_VOLUME]
+# UC privilege grants (USE_SCHEMA, SELECT, EXECUTE on schema; READ_VOLUME/WRITE_VOLUME on volume)
+# are NOT a DAB resource type as of CLI 0.298. Apply them post-deploy from a SQL warehouse:
+#
+#   GRANT USE_SCHEMA, SELECT, EXECUTE ON SCHEMA `${var.catalog}`.`${var.schema}`
+#     TO `${var.analyst_group}`;
+#   GRANT READ_VOLUME, WRITE_VOLUME ON VOLUME `${var.catalog}`.`${var.schema}`.`raw_filings`
+#     TO `${var.analyst_group}`;
+#
+# See docs/runbook.md for the full grant script.

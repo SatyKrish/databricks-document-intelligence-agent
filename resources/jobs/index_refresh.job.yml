@@ -11,11 +11,26 @@ resources:
 
       tasks:
         - task_key: sync_index
-          sql_task:
-            warehouse_id: ${var.warehouse_id}
-            query:
-              query: |
-                ALTER VECTOR SEARCH INDEX ${var.catalog}.${var.schema}.filings_summary_idx SYNC
+          spark_python_task:
+            python_file: ../../jobs/index_refresh/sync_index.py
+            parameters:
+              - "--endpoint"
+              - docintel-${bundle.target}
+              - "--index"
+              - ${var.catalog}.${var.schema}.filings_summary_idx
+              - "--source-table"
+              - ${var.catalog}.${var.schema}.gold_filing_sections_indexable
+              - "--embedding-endpoint"
+              - ${var.embedding_model_endpoint_name}
+          environment_key: sync_env
+
+      environments:
+        - environment_key: sync_env
+          spec:
+            client: "1"
+            dependencies:
+              - databricks-vectorsearch>=0.40
+              - databricks-sdk>=0.40
 
       permissions:
         - level: CAN_VIEW
