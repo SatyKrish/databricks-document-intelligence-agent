@@ -1,0 +1,10 @@
+# Claude Code — per-user settings (may contain credentials)
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
