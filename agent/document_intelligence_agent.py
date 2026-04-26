@@ -1,4 +1,4 @@
-"""Agent Bricks definition and SDK application logic."""
+"""Document Intelligence Agent definition and deployment logic."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ T = TypeVar("T")
 
 
 @dataclass
-class AgentBricksRuntime:
+class DocumentIntelligenceAgentRuntime:
     knowledge_assistant: KnowledgeAssistant
     supervisor_agent: SupervisorAgent
     kpi_function: str
@@ -370,7 +370,7 @@ def _grant_endpoint_query(w: WorkspaceClient, endpoint_name: str, group_name: st
     )
 
 
-def deploy_agent_bricks_runtime(
+def deploy_document_intelligence_agent(
     w: WorkspaceClient,
     *,
     target: str,
@@ -378,7 +378,7 @@ def deploy_agent_bricks_runtime(
     schema: str,
     warehouse_id: str,
     analyst_group: str,
-) -> AgentBricksRuntime:
+) -> DocumentIntelligenceAgentRuntime:
     index_name = f"{catalog}.{schema}.filings_summary_idx"
 
     kpi_function_name = _create_or_update_kpi_function(
@@ -411,7 +411,7 @@ def deploy_agent_bricks_runtime(
     if actual_knowledge_endpoint:
         _grant_endpoint_query(w, actual_knowledge_endpoint, analyst_group)
 
-    return AgentBricksRuntime(
+    return DocumentIntelligenceAgentRuntime(
         knowledge_assistant=knowledge_assistant,
         supervisor_agent=supervisor,
         kpi_function=kpi_function_name,
@@ -432,7 +432,7 @@ def main() -> int:
     if not args.catalog or not args.schema or not args.warehouse_id:
         parser.error("--catalog, --schema, and --warehouse-id are required")
 
-    runtime = deploy_agent_bricks_runtime(
+    runtime = deploy_document_intelligence_agent(
         WorkspaceClient(),
         target=args.target,
         catalog=args.catalog,

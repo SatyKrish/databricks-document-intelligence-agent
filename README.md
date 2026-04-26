@@ -84,9 +84,9 @@ Databricks creation path: [Create an AI agent](https://docs.databricks.com/aws/e
 The production agent path is:
 
 1. `jobs/index_refresh/sync_index.py` creates/syncs the Mosaic AI Vector Search Delta-Sync index over `gold_filing_sections_indexable`.
-2. `agent/agent_bricks.py` creates or updates the Agent Bricks Knowledge Assistant with that Vector Search index as its knowledge source. The source uses `summary` as the searchable text column and `filename` as the document URI column.
-3. The same bootstrap creates or updates the UC SQL function `lookup_10k_kpis`.
-4. The bootstrap creates or updates the Agent Bricks Supervisor Agent with two tools: the Knowledge Assistant for cited document Q&A and the UC function for deterministic KPI lookups.
+2. `agent/document_intelligence_agent.py` creates or updates the Agent Bricks Knowledge Assistant with that Vector Search index as its knowledge source. The source uses `summary` as the searchable text column and `filename` as the document URI column.
+3. `agent/document_intelligence_agent.py` creates or updates the UC SQL function `lookup_10k_kpis`.
+4. `agent/document_intelligence_agent.py` creates or updates the Agent Bricks Supervisor Agent with two tools: the Knowledge Assistant for cited document Q&A and the UC function for deterministic KPI lookups.
 5. Agent Bricks generates concrete serving endpoint names. Resolve the live Supervisor endpoint with `./scripts/resolve-agent-endpoint.sh <target>`.
 6. The Databricks App receives the resolved endpoint through the `agent_endpoint_name` bundle variable as `DOCINTEL_AGENT_ENDPOINT`.
 7. The app invokes `POST /serving-endpoints/{endpoint}/invocations` directly with the user's OBO token. `WorkspaceClient.serving_endpoints.query()` is not used for Agent Bricks invocation because validation showed it did not preserve the needed Agent Bricks response shape.
@@ -228,7 +228,7 @@ databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
 DOCINTEL_CATALOG=workspace \
 DOCINTEL_SCHEMA=docintel_10k_demo \
 DOCINTEL_WAREHOUSE_ID=<from-step-2> \
-python -m agent.agent_bricks --target demo
+python -m agent.document_intelligence_agent --target demo
 AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
 databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
 databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
@@ -321,7 +321,7 @@ bash -n scripts/bootstrap-demo.sh
 
 # Compile checks for all modified Python
 .venv/bin/python -m py_compile \
-  agent/agent_bricks.py agent/tools.py \
+  agent/document_intelligence_agent.py agent/tools.py \
   app/app.py app/agent_bricks_client.py app/agent_bricks_response.py app/lakebase_client.py \
   evals/clears_eval.py \
   scripts/wait_for_kpis.py samples/synthesize.py

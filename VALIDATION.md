@@ -8,7 +8,7 @@ Use this guide to prove the reference implementation works in a Databricks works
 python3 -m py_compile \
   agent/tools.py \
   app/app.py app/agent_bricks_client.py app/agent_bricks_response.py app/lakebase_client.py \
-  evals/clears_eval.py agent/agent_bricks.py \
+  evals/clears_eval.py agent/document_intelligence_agent.py \
   scripts/wait_for_kpis.py samples/synthesize.py
 
 bash -n scripts/bootstrap-demo.sh
@@ -103,7 +103,7 @@ Expected:
 As of 2026-04-26, the demo workspace evidence is:
 
 - Bundle validation passed with the resolved Agent Bricks Supervisor endpoint.
-- Agent Bricks bootstrap succeeded:
+- Document Intelligence Agent deployment succeeded:
   - Knowledge Assistant display name: `doc-intel-knowledge-demo`
   - Supervisor display name: `doc-intel-supervisor-demo`
   - UC function: `workspace.docintel_10k_demo.lookup_10k_kpis`

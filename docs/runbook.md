@@ -35,18 +35,18 @@ If a filing scores below threshold:
 
 ## Update Agent Bricks configuration
 
-Agent Bricks resources are defined and applied by `agent/agent_bricks.py`. Run it after changes to Knowledge Assistant instructions, Supervisor instructions, or the KPI tool function:
+Agent Bricks resources are defined and applied by `agent/document_intelligence_agent.py`. Run it after changes to Knowledge Assistant instructions, Supervisor instructions, or the KPI tool function:
 
 ```bash
 DOCINTEL_CATALOG=<catalog> \
 DOCINTEL_SCHEMA=<schema> \
 DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
-python -m agent.agent_bricks --target demo
+python -m agent.document_intelligence_agent --target demo
 ```
 
 This creates or updates the Knowledge Assistant, syncs the Vector Search knowledge source, creates or updates the UC SQL KPI function, and wires both into the Supervisor Agent endpoint.
 
-Agent Bricks generates concrete serving endpoint names. After bootstrap, always resolve the live Supervisor endpoint before deploying or restarting the app:
+Agent Bricks generates concrete serving endpoint names. After applying the agent definition, always resolve the live Supervisor endpoint before deploying or restarting the app:
 
 ```bash
 AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
@@ -82,7 +82,7 @@ Metric key names can vary across MLflow/databricks-agents versions. The eval run
 | Agent endpoint 401 | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and `resources/consumers/analyst.app.yml:user_api_scopes` includes `serving.serving-endpoints` and `sql` |
 | App deploy fails with `Databricks Apps - user token passthrough feature is not enabled` | Workspace/org prerequisite missing | Enable the Databricks Apps user-token passthrough feature and rerun bootstrap |
 | Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (documented destructive-update behavior — see [Databricks Apps deploy docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy)) | Re-apply: `databricks apps update doc-intel-analyst-demo --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read` |
-| Bootstrap cannot grant Agent Bricks endpoint query permission | Permissions API was called with endpoint name instead of internal endpoint ID, or the generated endpoint is not ready | Use current `agent/agent_bricks.py`; it waits for readiness and grants by serving endpoint ID |
+| Agent deployment cannot grant endpoint query permission | Permissions API was called with endpoint name instead of internal endpoint ID, or the generated endpoint is not ready | Use current `agent/document_intelligence_agent.py`; it waits for readiness and grants by serving endpoint ID |
 | Streamlit user sees stale UC permissions | OBO token captured at WebSocket open; never refreshes ([Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)) | Reload the page after permission changes |
 | Lakebase tables not writable from deployed App | Local-dev `streamlit run` initialised schema under user identity, not App SP | Connect as App SP and `DROP TABLE feedback, query_logs, conversation_history`; next App run re-creates them under SP. See `app/README.md` |
 | CLEARS Latency axis fails | Agent Bricks orchestration or Knowledge Assistant source is too broad | Narrow the Knowledge Assistant source, tune Supervisor instructions, or reduce structured-tool fan-out |
@@ -151,7 +151,7 @@ resolve on a fresh workspace. Each needs a phase-2 step after a prior side effec
 1. **Databricks App needs the generated Agent Bricks endpoint name**
    - Agent Bricks generates concrete Knowledge Assistant and Supervisor serving
      endpoint names.
-   - `agent/agent_bricks.py` returns the generated Supervisor
+   - `agent/document_intelligence_agent.py` returns the generated Supervisor
      endpoint, and `resources/consumers/analyst.app.yml` injects it into
      `DOCINTEL_AGENT_ENDPOINT` via the `agent_endpoint_name` bundle variable.
    - **Fix**: bootstrap creates data and Agent Bricks resources before the full

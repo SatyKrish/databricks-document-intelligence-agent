@@ -19,7 +19,7 @@ description: "Task list for Databricks 10-K Analyst implementation"
 
 ## Path Conventions
 
-This is a DAB plus Agent Bricks bootstrap project. SQL pipeline code is at `pipelines/sql/`, deterministic tool glue at `agent/`, Streamlit App at `app/`, evals at `evals/`, bundle resources at `resources/`, and Agent Bricks orchestration in `scripts/bootstrap_agent_bricks.py`. See plan.md for the full tree.
+This is a DAB plus Agent Bricks deployment project. SQL pipeline code is at `pipelines/sql/`, deterministic tool glue at `agent/`, Streamlit App at `app/`, evals at `evals/`, bundle resources at `resources/`, and Agent Bricks orchestration in `agent/document_intelligence_agent.py`. See plan.md for the full tree.
 
 ---
 
@@ -88,8 +88,8 @@ This is a DAB plus Agent Bricks bootstrap project. SQL pipeline code is at `pipe
 - [x] T022 [US2] Remove custom retrieval implementation (`agent/retrieval.py`) and configure Agent Bricks Knowledge Assistant over the governed Document Intelligence / Vector Search source (depends on T020)
 - [x] T023 [US2] Implement `agent/tools.py` as deterministic structured KPI tool glue for Agent Bricks, wrapping governed SQL over `gold_filing_kpis`
 - [x] T024 [US2] Remove custom `agent/analyst_agent.py` and direct `mlflow.pyfunc` registration; Knowledge Assistant owns single-filing cited Q&A (depends on T022, T023)
-- [x] T025 [US2] Remove `agent/log_and_register.py` and bespoke model-version promotion from the production path; bootstrap configures Agent Bricks resources idempotently instead
-- [x] T026 [US2] Replace `resources/consumers/agent.serving.yml` with `scripts/bootstrap_agent_bricks.py` Agent Bricks endpoint/configuration behind AI Gateway with mandatory OBO and guardrails (depends on T024, T025)
+- [x] T025 [US2] Remove `agent/log_and_register.py` and bespoke model-version promotion from the production path; `agent/document_intelligence_agent.py` configures Agent Bricks resources idempotently instead
+- [x] T026 [US2] Replace `resources/consumers/agent.serving.yml` with `agent/document_intelligence_agent.py` Agent Bricks endpoint/configuration behind AI Gateway with mandatory OBO and guardrails (depends on T024, T025)
 - [x] T027 [US2] Implement `app/app.py` (Streamlit): chat input, calls the Agent Bricks endpoint as the invoking user, renders answer + citations as chips, thumbs-up/down + comment widget that POSTs to a Lakebase write helper; persists `conversation_id` in session state (depends on T026, T007)
 - [x] T028 [US2] Implement `app/lakebase_client.py`: thin wrapper using `psycopg` with the bundle-injected DSN to insert into `conversation_history`, `query_logs`, `feedback`
 - [x] T029 [US2] Define the Databricks App in `resources/consumers/analyst.app.yml`: source = `app/`, runtime python, env = Lakebase binding + agent endpoint binding (depends on T027, T028)

@@ -109,16 +109,16 @@ set_agent_endpoint_name() {
   log "  using Agent Bricks Supervisor endpoint $AGENT_ENDPOINT_NAME"
 }
 
-run_agent_bricks_bootstrap() {
-  local bootstrap_json endpoint
-  bootstrap_json=$("$PYTHON" -m agent.agent_bricks \
+deploy_document_intelligence_agent() {
+  local agent_json endpoint
+  agent_json=$("$PYTHON" -m agent.document_intelligence_agent \
     --target "$TARGET" \
     --catalog "$DOCINTEL_CATALOG" \
     --schema "$DOCINTEL_SCHEMA" \
     --warehouse-id "$DOCINTEL_WAREHOUSE_ID" \
     --analyst-group "$ANALYST_GROUP") || \
-    die "Agent Bricks bootstrap failed"
-  endpoint=$(printf '%s' "$bootstrap_json" | "$PYTHON" -c "
+    die "Document Intelligence Agent deployment failed"
+  endpoint=$(printf '%s' "$agent_json" | "$PYTHON" -c "
 import json, sys
 payload = json.load(sys.stdin)
 print(payload.get('supervisor_endpoint') or '')
@@ -256,7 +256,7 @@ if [[ "$MODE" == "first" ]]; then
     --embedding-endpoint "$EMBEDDING_ENDPOINT" || \
     die "VS index creation failed (sync_index.py)"
 
-  run_agent_bricks_bootstrap
+  deploy_document_intelligence_agent
   wait_for_lakebase_available
 
   log "step 3/6: stage-2 deploy (full bundle — consumers join the foundation)"
@@ -286,7 +286,7 @@ else
     die "timed out waiting for $KPI_TABLE"
   databricks bundle run -t "$TARGET" "${BUNDLE_VAR_FLAGS[@]}" index_refresh || \
     log "  warn: index_refresh failed; the table_update trigger will retry on the next pipeline run"
-  run_agent_bricks_bootstrap
+  deploy_document_intelligence_agent
 
   log "step 3/6: skipped (no second deploy needed in steady-state)"
 fi

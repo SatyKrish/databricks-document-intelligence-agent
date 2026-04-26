@@ -37,7 +37,7 @@ variables:
     description: UC group granted SELECT/USE on the catalog/schema
     default: account users
   agent_endpoint_name:
-    description: Agent Bricks Supervisor serving endpoint name resolved by agent.agent_bricks
+    description: Agent Bricks Supervisor serving endpoint name resolved by agent.document_intelligence_agent
     default: UNSET_AGENT_BRICKS_ENDPOINT
 
 targets:

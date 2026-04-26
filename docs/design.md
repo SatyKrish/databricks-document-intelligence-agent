@@ -91,7 +91,7 @@ It also demonstrates a development workflow: **Spec-Kit** for spec-driven design
    "Quality before retrieval."
 ```
 
-**Ownership note**: DAB manages the Vector Search **endpoint** (`resources/foundation/filings_index.yml`) and the index-refresh **job** (`resources/consumers/index_refresh.job.yml`). The **index** itself isn't yet a DAB-managed resource type as of CLI 0.298 — `jobs/index_refresh/sync_index.py` creates the Delta-Sync index on first run and triggers a sync on subsequent runs. The endpoint lives in foundation so first-deploy bootstrap can materialize the index before `agent/agent_bricks.py` attaches it to Knowledge Assistant.
+**Ownership note**: DAB manages the Vector Search **endpoint** (`resources/foundation/filings_index.yml`) and the index-refresh **job** (`resources/consumers/index_refresh.job.yml`). The **index** itself isn't yet a DAB-managed resource type as of CLI 0.298 — `jobs/index_refresh/sync_index.py` creates the Delta-Sync index on first run and triggers a sync on subsequent runs. The endpoint lives in foundation so first-deploy bootstrap can materialize the index before `agent/document_intelligence_agent.py` attaches it to Knowledge Assistant.
 
 ### Agent Bricks target runtime
 
@@ -129,8 +129,8 @@ Repository code is limited to deterministic tool glue, app UI, evals, and deploy
 
 **Concrete Agent Bricks wiring**:
 
-- `agent/agent_bricks.py` creates or updates `doc-intel-knowledge-${target}` as the Knowledge Assistant. Its source is the Vector Search index over `gold_filing_sections_indexable`, with `summary` as the text column and `filename` as the document URI column.
-- The same bootstrap creates or updates the UC SQL function `<catalog>.<schema>.lookup_10k_kpis`.
+- `agent/document_intelligence_agent.py` creates or updates `doc-intel-knowledge-${target}` as the Knowledge Assistant. Its source is the Vector Search index over `gold_filing_sections_indexable`, with `summary` as the text column and `filename` as the document URI column.
+- `agent/document_intelligence_agent.py` creates or updates the UC SQL function `<catalog>.<schema>.lookup_10k_kpis`.
 - `doc-intel-supervisor-${target}` is the Supervisor Agent. Its tools are the Knowledge Assistant and the UC SQL KPI function. Supervisor Agent owns tool routing.
 - Agent Bricks generates concrete serving endpoint names for Knowledge Assistant and Supervisor Agent. The repo resolves the live Supervisor endpoint with `scripts/resolve-agent-endpoint.sh` and passes it into DAB as `agent_endpoint_name`.
 - Serving endpoint permissions are granted by endpoint ID after the generated endpoint is ready. The Databricks App does not bind to the endpoint as a resource; it invokes the resolved endpoint with each user's OBO token.
@@ -224,7 +224,7 @@ When you read `specs/001-doc-intel-10k/plan.md` you'll see a "Constitution Check
 
 ### Pillar 2 — Databricks Asset Bundles + the Claude Code skill suite
 
-[**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe most of the workspace state as YAML. One root `databricks.yml` declares variables and targets (`demo`, `prod`); `resources/**/*.yml` declares each DAB-managed resource (pipeline, jobs, Vector Search endpoint, app, monitor, dashboard, Lakebase instance + catalog). `databricks bundle deploy -t demo` reconciles workspace state to YAML. The Vector Search **index** is still created and synced by `jobs/index_refresh/sync_index.py` until DAB supports index resources directly. Agent Bricks Knowledge Assistant and Supervisor Agent are SDK-managed by `agent/agent_bricks.py`; DAB only passes the resolved generated Supervisor endpoint into the app through `agent_endpoint_name`.
+[**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe most of the workspace state as YAML. One root `databricks.yml` declares variables and targets (`demo`, `prod`); `resources/**/*.yml` declares each DAB-managed resource (pipeline, jobs, Vector Search endpoint, app, monitor, dashboard, Lakebase instance + catalog). `databricks bundle deploy -t demo` reconciles workspace state to YAML. The Vector Search **index** is still created and synced by `jobs/index_refresh/sync_index.py` until DAB supports index resources directly. Agent Bricks Knowledge Assistant and Supervisor Agent are SDK-managed by `agent/document_intelligence_agent.py`; DAB only passes the resolved generated Supervisor endpoint into the app through `agent_endpoint_name`.
 
 This repo was built with Databricks-specific Claude Code skill bundles. Those bundles are distributed by Databricks via the CLI / Claude Code plugin channel and **are not vendored in this open-source tree** — install them locally if you have access, or reference the canonical Databricks docs (mapping in [`../CONTRIBUTING.md`](../CONTRIBUTING.md)).
 

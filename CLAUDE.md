@@ -16,7 +16,7 @@ For an end-to-end overview written for humans, read [`README.md`](./README.md).
 
 The bundle has three chicken-egg dependencies that prevent a single `databricks bundle deploy -t demo` from succeeding on a fresh workspace:
 
-1. **Databricks App config** needs the generated Agent Bricks Supervisor endpoint name from `agent/agent_bricks.py`, which can only run after the Vector Search index exists.
+1. **Databricks App config** needs the generated Agent Bricks Supervisor endpoint name from `agent/document_intelligence_agent.py`, which can only run after the Vector Search index exists.
 2. **Lakehouse Monitor** (`resources/consumers/kpi_drift.yml`) attaches to `gold_filing_kpis`, which doesn't exist until the pipeline runs once.
 3. **Lakebase database_catalog + Databricks App** race the `database_instance` provisioning.
 
@@ -70,7 +70,7 @@ These were discovered the painful way during the 2026-04-25 bring-up. Future ses
 - **Section normalization**: `pipelines/sql/03_gold_classify_extract.sql` POSEXPLODES `parsed:sections[*]` and represents sectionless VARIANT output as one `full_document` row so we never lose a filing.
 - **`lakebase_stopped: true` is rejected on instance creation**: the API doesn't allow creating a database_instance directly into stopped state. Default is `false`; flip to `true` only after the instance exists. Reference: `databricks.yml` variable description.
 - **macOS doesn't ship `python`**: scripts must prefer `.venv/bin/python` then fall back to `python3`. Reference: `scripts/bootstrap-demo.sh`.
-- **Agent Bricks resources are SDK-managed**: `agent/agent_bricks.py` creates/updates the Knowledge Assistant, its Vector Search knowledge source, the UC KPI function, and the Supervisor Agent. DAB still manages the surrounding data/app/monitor resources.
+- **Agent Bricks resources are SDK-managed**: `agent/document_intelligence_agent.py` creates/updates the Knowledge Assistant, its Vector Search knowledge source, the UC KPI function, and the Supervisor Agent. DAB still manages the surrounding data/app/monitor resources.
 - **Agent Bricks generates endpoint names**: use `scripts/resolve-agent-endpoint.sh <target>` and pass the result as `--var agent_endpoint_name=...` for deploys and app runs.
 - **Agent Bricks invocation uses the invocations path directly**: `app/agent_bricks_client.py` posts to `/serving-endpoints/{endpoint}/invocations` with the user's OBO token and an `X-Request-ID`. Do not swap this back to `WorkspaceClient.serving_endpoints.query()` without revalidating the Agent Bricks response shape.
 - **Streamlit on Databricks Apps requires CORS+XSRF off via env vars**: not flags. `STREAMLIT_SERVER_ENABLE_CORS=false` and `STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false` in `app/app.yaml`. Databricks Apps runtime config: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime.

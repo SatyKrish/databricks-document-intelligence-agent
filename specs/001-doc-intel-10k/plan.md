@@ -5,7 +5,7 @@
 
 ## Summary
 
-Build a Databricks-native, governed pipeline + Agent Bricks system that turns SEC 10-K PDFs into a queryable lakehouse and a cited Q&A experience. SQL Lakeflow Spark Declarative Pipelines parse PDFs once with `ai_parse_document` (VARIANT), classify sections with `ai_classify`, extract structured KPIs with `ai_extract`, and score every section against a 5-dimension quality rubric. High-quality summaries flow into a Mosaic AI Vector Search index. Agent Bricks Knowledge Assistant handles cited document Q&A; Agent Bricks Supervisor Agent coordinates the Knowledge Assistant with a deterministic Unity Catalog KPI function for cross-company comparisons. AI Gateway, Unity Catalog, and mandatory OBO enforce identity and audit. Conversation history and feedback land in Lakebase Postgres. Lakehouse Monitoring tracks extraction drift; an AI/BI dashboard surfaces query-log content gaps. CLEARS evaluation in MLflow gates promotion. The stack is deployed by DAB plus idempotent Agent Bricks bootstrap (`databricks bundle deploy -t demo|prod`, `scripts/bootstrap_agent_bricks.py`).
+Build a Databricks-native, governed pipeline + Agent Bricks system that turns SEC 10-K PDFs into a queryable lakehouse and a cited Q&A experience. SQL Lakeflow Spark Declarative Pipelines parse PDFs once with `ai_parse_document` (VARIANT), classify sections with `ai_classify`, extract structured KPIs with `ai_extract`, and score every section against a 5-dimension quality rubric. High-quality summaries flow into a Mosaic AI Vector Search index. Agent Bricks Knowledge Assistant handles cited document Q&A; Agent Bricks Supervisor Agent coordinates the Knowledge Assistant with a deterministic Unity Catalog KPI function for cross-company comparisons. AI Gateway, Unity Catalog, and mandatory OBO enforce identity and audit. Conversation history and feedback land in Lakebase Postgres. Lakehouse Monitoring tracks extraction drift; an AI/BI dashboard surfaces query-log content gaps. CLEARS evaluation in MLflow gates promotion. The stack is deployed by DAB plus idempotent Agent Bricks bootstrap (`databricks bundle deploy -t demo|prod`, `agent/document_intelligence_agent.py`).
 
 ## Technical Context
 
@@ -79,6 +79,7 @@ pipelines/
     └── 04_gold_quality.sql                     # 5-dim rubric → quality_score
 
 agent/
+├── document_intelligence_agent.py             # Knowledge Assistant + Supervisor definition
 ├── tools.py                                    # deterministic KPI tool glue for Agent Bricks
 └── tests/
     └── test_tools.py
@@ -94,7 +95,6 @@ evals/
 
 scripts/
 ├── bootstrap-demo.sh                           # staged deploy orchestration
-├── bootstrap_agent_bricks.py                   # Knowledge Assistant + Supervisor bootstrap
 └── wait_for_kpis.py
 
 .github/
@@ -104,7 +104,7 @@ scripts/
 CLAUDE.md                                       # Runtime guidance for Claude Code
 ```
 
-**Structure Decision**: Single DAB containing one pipeline, two jobs, one Vector Search endpoint, one Lakebase project, one monitor, one dashboard, one app, and a CI workflow. Agent Bricks resources are SDK-managed by `scripts/bootstrap_agent_bricks.py` until DAB exposes first-class Knowledge Assistant and Supervisor resource types. SQL pipeline code lives at the root under `pipelines/sql/`; deterministic tool glue lives at `agent/`; app code lives at `app/`.
+**Structure Decision**: Single DAB containing one pipeline, two jobs, one Vector Search endpoint, one Lakebase project, one monitor, one dashboard, one app, and a CI workflow. Agent Bricks resources are SDK-managed by `agent/document_intelligence_agent.py` until DAB exposes first-class Knowledge Assistant and Supervisor resource types. SQL pipeline code lives at the root under `pipelines/sql/`; deterministic tool glue lives at `agent/`; app code lives at `app/`.
 
 ## Phase 0 — Outline & Research
 

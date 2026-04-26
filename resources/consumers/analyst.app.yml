@@ -12,7 +12,7 @@ resources:
 
       # Databricks Apps auto-grants Lakebase permissions to the App SP on
       # deploy — see https://docs.databricks.com/aws/en/dev-tools/databricks-apps/access-data.
-      # Agent Bricks endpoint access is granted by agent/agent_bricks.py
+      # Agent Bricks endpoint access is granted by agent/document_intelligence_agent.py
       # because calls use OBO user identity.
       resources:
         - name: docintel-lakebase
