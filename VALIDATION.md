@@ -6,10 +6,10 @@ Use this guide to prove the reference implementation works in a Databricks works
 
 ```bash
 python3 -m py_compile \
-  agent/_obo.py agent/analyst_agent.py agent/log_and_register.py \
-  agent/retrieval.py agent/supervisor.py agent/tools.py \
+  agent/tools.py \
   app/app.py app/lakebase_client.py \
-  evals/clears_eval.py scripts/wait_for_kpis.py samples/synthesize.py
+  evals/clears_eval.py scripts/bootstrap_agent_bricks.py \
+  scripts/wait_for_kpis.py samples/synthesize.py
 
 bash -n scripts/bootstrap-demo.sh
 pytest agent/tests
@@ -39,11 +39,11 @@ Expected outcomes:
 - Foundation resources deploy first.
 - Synthetic PDFs upload to the `raw_filings` volume.
 - Pipeline creates Gold rows.
-- Agent model registers in Unity Catalog.
+- Agent Bricks Knowledge Assistant and Supervisor Agent are created or updated.
 - Consumer resources deploy cleanly.
 - App config is applied with `bundle run analyst_app`.
-- Bootstrap prints either OBO scope verification or an explicit app-level OBO disabled warning.
-- Smoke query returns a grounded answer.
+- Bootstrap verifies mandatory OBO scopes.
+- Smoke query reaches the Agent Bricks supervisor endpoint.
 
 ## Data Checks
 
@@ -66,7 +66,7 @@ Expected:
 
 ```bash
 python evals/clears_eval.py \
-  --endpoint analyst-agent-demo \
+  --endpoint "$(./scripts/resolve-agent-endpoint.sh demo)" \
   --dataset evals/dataset.jsonl
 ```
 
@@ -85,14 +85,8 @@ Expected:
 
 ## OBO Verification
 
-If app-level OBO is enabled:
-
-- Confirm `resources/consumers/analyst.app.yml:user_api_scopes` is uncommented.
+- Confirm `resources/consumers/analyst.app.yml:user_api_scopes` is present.
 - Run `databricks bundle deploy -t demo && databricks bundle run -t demo analyst_app`.
 - Confirm bootstrap or CI verifies `serving.serving-endpoints` and `sql` scopes.
-- Check audit logs for user-scoped downstream access.
-
-If app-level OBO is not enabled:
-
-- Treat the deployment as reference/demo only.
-- Do not claim user-level UC row/column enforcement.
+- Check audit logs for user-scoped downstream access through Agent Bricks, Knowledge Assistant, and the structured KPI SQL function.
+- If the workspace cannot grant user-token passthrough, deployment is invalid and must fail.

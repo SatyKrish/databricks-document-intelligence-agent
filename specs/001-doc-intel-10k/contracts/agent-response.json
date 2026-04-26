@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Agent Endpoint Response",
-  "description": "Response body returned by the Mosaic AI Agent serving endpoint.",
+  "description": "Normalized response rendered by the App after querying the Agent Bricks Supervisor endpoint.",
   "type": "object",
   "required": ["answer", "citations", "latency_ms", "retrieved_count", "agent_path"],
   "properties": {
@@ -18,19 +18,19 @@
       "description": "Sources used to ground the answer. May be empty when grounded=false.",
       "items": {
         "type": "object",
-        "required": ["filename", "section_label", "score"],
         "properties": {
           "filename": { "type": "string", "description": "Source filing filename." },
+          "doc_uri": { "type": "string", "description": "Agent Bricks citation URI when present." },
           "section_label": {
             "type": "string",
             "enum": ["MD&A", "Risk", "Financials", "Notes", "Other"],
             "description": "Canonical section label."
           },
-          "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Re-ranker score." },
+          "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Optional relevance score." },
           "char_offset": { "type": ["integer", "null"], "description": "Optional offset into the section text." },
           "snippet": { "type": ["string", "null"], "description": "Optional short snippet for hover preview." }
         },
-        "additionalProperties": false
+        "additionalProperties": true
       }
     },
     "latency_ms": {
@@ -41,12 +41,12 @@
     "retrieved_count": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total candidates pulled before re-ranking trim."
+      "description": "Number of citations surfaced to the app."
     },
     "agent_path": {
       "type": "string",
-      "enum": ["knowledge_assistant", "analyst", "supervisor"],
-      "description": "Which agent handled the request; logged for evaluation slicing."
+      "enum": ["knowledge_assistant", "agent_bricks_supervisor"],
+      "description": "Agent Bricks path logged for evaluation slicing."
     },
     "conversation_id": {
       "type": ["string", "null"],

@@ -147,9 +147,9 @@ PDF in volume
        └─ ai_parse_document → silver_parsed_filings (parse_status)
             └─ ai_classify + ai_extract → gold_filing_{sections,kpis}
                  └─ ai_query rubric → gold_filing_quality (quality_score)
-                      └─ embed_eligible? → Vector Search index sync
-                           └─ Knowledge Assistant + Analyst + Supervisor agents
-                                └─ Model Serving + AI Gateway
+                      └─ quality_score threshold → Vector Search index sync
+                           └─ Agent Bricks Knowledge Assistant + Supervisor Agent
+                                └─ AI Gateway + OBO
                                      └─ Streamlit App turn
                                           └─ Lakebase query_logs + feedback
 ```

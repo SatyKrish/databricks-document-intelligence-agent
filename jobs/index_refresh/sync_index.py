@@ -8,11 +8,31 @@ filtering happens at ingest (constitution principle IV).
 from __future__ import annotations
 
 import argparse
+from datetime import timedelta
 import logging
 import sys
+import time
 
 from databricks.sdk import WorkspaceClient
-from databricks.vector_search.client import VectorSearchClient
+from databricks.sdk.service.vectorsearch import (
+    DeltaSyncVectorIndexSpecRequest,
+    EmbeddingSourceColumn,
+    PipelineType,
+    VectorIndexType,
+)
+
+
+def _wait_index_ready(w: WorkspaceClient, index_name: str, *, timeout_seconds: int = 1200) -> None:
+    deadline = time.time() + timeout_seconds
+    while True:
+        index = w.vector_search_indexes.get_index(index_name)
+        status = index.status
+        if status and status.ready:
+            return
+        if time.time() >= deadline:
+            message = getattr(status, "message", None) or "UNKNOWN"
+            raise TimeoutError(f"Vector Search index {index_name} not ready after {timeout_seconds}s: {message}")
+        time.sleep(15)
 
 
 def main() -> int:
@@ -27,25 +47,37 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log = logging.getLogger("vs-sync")
 
-    vsc = VectorSearchClient(disable_notice=True)
-    indexes = {idx["name"] for idx in vsc.list_indexes(name=args.endpoint).get("vector_indexes", [])}
+    w = WorkspaceClient()
+    w.vector_search_endpoints.wait_get_endpoint_vector_search_endpoint_online(
+        args.endpoint,
+        timeout=timedelta(minutes=20),
+    )
+    indexes = {idx.name for idx in w.vector_search_indexes.list_indexes(endpoint_name=args.endpoint)}
 
     if args.index not in indexes:
         log.info("creating Delta-Sync index %s", args.index)
-        vsc.create_delta_sync_index_and_wait(
+        w.vector_search_indexes.create_index(
+            name=args.index,
             endpoint_name=args.endpoint,
-            index_name=args.index,
-            source_table_name=args.source_table,
             primary_key=args.primary_key,
-            pipeline_type="TRIGGERED",
-            embedding_source_column="summary",
-            embedding_model_endpoint_name=args.embedding_endpoint,
+            index_type=VectorIndexType.DELTA_SYNC,
+            delta_sync_index_spec=DeltaSyncVectorIndexSpecRequest(
+                source_table=args.source_table,
+                pipeline_type=PipelineType.TRIGGERED,
+                embedding_source_columns=[
+                    EmbeddingSourceColumn(
+                        name="summary",
+                        embedding_model_endpoint_name=args.embedding_endpoint,
+                    )
+                ],
+            ),
         )
+        _wait_index_ready(w, args.index)
         log.info("index created and initial sync complete")
         return 0
 
     log.info("index %s exists; triggering sync", args.index)
-    vsc.get_index(endpoint_name=args.endpoint, index_name=args.index).sync()
+    w.vector_search_indexes.sync_index(args.index)
     log.info("sync triggered")
     return 0
 

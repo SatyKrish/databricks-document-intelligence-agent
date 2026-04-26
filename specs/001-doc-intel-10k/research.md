@@ -39,7 +39,7 @@ evolution natively.
 ## Decision: Quality rubric as SQL `ai_query` calls in Gold
 
 **Rationale**: Reffy's 31-point rubric showed that scoring + filtering at
-ingest is more cost-effective than re-ranking at inference. Using
+ingest is more cost-effective than trying to repair context at inference. Using
 `ai_query()` in `04_gold_quality.sql` keeps the rubric declarative and
 versionable in git; the 5 dimensions (parse_completeness, layout_fidelity,
 ocr_confidence, section_recognizability, kpi_extractability) each give
@@ -50,35 +50,41 @@ tunable as a bundle parameter.
 - *Single `extraction_confidence` value*: rejected — collapses debuggability.
 - *Python scorer in a job*: rejected — imperative, principle III.
 
-## Decision: Hybrid retrieval (top-25) → re-rank → top-5
+## Decision: Agent Bricks Knowledge Assistant + Supervisor Agent, not custom pyfunc
 
-**Rationale**: Reffy reports keyword-only sub-2s but reasoning needs LLM
-generation. Hybrid keyword + semantic retrieval to top-25, then a Mosaic AI
-re-ranker (CPU) trim to top-5, keeps single-filing P95 ≤ 8s achievable
-on CPU serving while improving top-5 ordering qualitatively. Bigger windows blow
-the latency budget; pure semantic misses exact ticker/year matches in
-financial filings.
+**Rationale**: The Agent Bricks article is explicit that the challenge is not
+building an agent loop; it is running agents with real context, permissions,
+identity, audit, and control. Therefore the reference implementation must use
+Agent Bricks as the agent construction and governance layer. Knowledge
+Assistant handles cited single-filing document Q&A over the governed Document
+Intelligence output. Supervisor Agent orchestrates Knowledge Assistant with a
+deterministic KPI tool over `gold_filing_kpis` for structured comparisons.
+AI Gateway and Unity Catalog enforce identity, permissions, audit, routing,
+and guardrails end to end.
 
-## Decision: Mosaic AI Agent Framework + Knowledge Assistant + Supervisor
-
-**Rationale**: First-class platform primitives. The Knowledge Assistant
-auto-ingests the Vector Search index and handles single-filing Q&A;
-Supervisor handles cross-company fan-out (P3); a Custom Analyst Agent
-adds a UC-Function tool that hits `gold_filing_kpis` directly for
-structured comparisons. All three are logged via `mlflow.pyfunc`,
-registered in UC, and served from a single endpoint.
+Custom `mlflow.pyfunc` agents, custom retrieval/reranking loops, custom
+supervisor routing, and bespoke Model Serving endpoint ownership are rejected
+for this reference because they reproduce the exact glue layer that Agent
+Bricks is meant to remove. They also caused deploy-order and serving
+provisioning failures during validation.
 
 **Alternatives**:
-- *LangGraph standalone*: rejected. Possible, but bypasses UC registration
-  and gives up the AI Gateway integration story.
-- *DSPy* (Reffy's choice): considered. Mosaic AI Agent Framework now subsumes
-  the routing pattern, with first-class CLEARS evaluators.
+- *Custom `mlflow.pyfunc` analyst agent*: rejected. It can work as a prototype,
+  but it is not the Agent Bricks pattern and it requires custom auth policy,
+  serving and supervisor lifecycle code.
+- *LangGraph standalone*: rejected. Agent Bricks can interoperate with external
+  frameworks when needed, but this reference is intended to demonstrate
+  Databricks' governed enterprise agent platform, not a framework-specific
+  custom runtime.
+- *DSPy* (Reffy's choice): rejected for v1 of this reference. The objective is
+  to demonstrate Document Intelligence + Agent Bricks as described in the
+  source articles.
 
 ## Decision: Lakebase Postgres for conversation state, not Delta tables
 
 **Rationale**: Per-turn writes (~100s of tiny rows/sec at peak) are a poor
 fit for Delta. Lakebase Postgres is the platform-native managed Postgres
-that integrates with Apps and Model Serving; reads/writes are sub-10ms.
+that integrates with Apps; reads/writes are sub-10ms.
 The Reffy team explicitly chose Lakebase for this exact pattern.
 
 ## Decision: Streamlit App, not React + FastAPI
@@ -101,7 +107,7 @@ on every PR (`databricks bundle validate -t demo`), and `deploy` on push to
 edits we can't assume. A Lakeflow Job listing the volume, filtering
 `ingested_at < now()-90d`, and removing files is bundle-managed,
 auditable in `query_logs`, and trivial to extend later. Silver/Gold are
-preserved indefinitely so retrieval doesn't lose context after raw cleanup.
+preserved indefinitely so cited document answers do not lose context after raw cleanup.
 
 ## Open follow-ups
 
@@ -110,4 +116,3 @@ None blocking. Items intentionally deferred:
 - Lakeflow Connect SharePoint connector (post-v1).
 - Content-hash idempotency key (filename suffices for v1).
 - React + FastAPI frontend.
-- GPU re-rank for >50-result windows.

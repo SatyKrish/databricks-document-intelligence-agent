@@ -5,7 +5,7 @@ Goal: from a clean clone, stand up the entire stack on the Databricks `demo` tar
 ## Prerequisites
 
 - macOS or Linux, `python` 3.11+, `git`, `databricks` CLI ≥ 0.298 (`brew install databricks/tap/databricks`)
-- A Databricks workspace with: serverless SQL warehouse (AI Functions GA), Mosaic AI Vector Search and Model Serving entitlements, Lakebase enabled
+- A Databricks workspace with: serverless SQL warehouse (AI Functions GA), Mosaic AI Vector Search, Agent Bricks Knowledge Assistant and Supervisor Agent, AI Gateway, Databricks Apps user-token passthrough, Unity Catalog, and Lakebase enabled
 - An auth profile (`databricks auth login --host <workspace-url>` once); verify with `databricks auth profiles`
 - Local virtualenv: `python -m venv .venv && .venv/bin/pip install -r agent/requirements.txt -r evals/requirements.txt`
 
@@ -31,10 +31,10 @@ DOCINTEL_WAREHOUSE_ID=<your-warehouse-id> \
 
 The script implements a 6-step staged deploy:
 
-1. Detect & clean orphan resources from prior failed runs.
+1. Check environment conflicts such as Lakebase soft-delete name retention.
 2. **Stage 1**: deploy `resources/foundation/` only (catalog/schema/volume, pipeline, retention job, Lakebase instance, VS endpoint) — consumer YAMLs are temp-renamed to `*.yml.skip`.
-3. **Produce data**: upload synthetic samples, run pipeline, materialize the VS index, register agent model, wait for Lakebase to reach `AVAILABLE`.
-4. **Stage 2**: full `bundle deploy` — consumers (serving endpoint, monitor, index-refresh job, app, dashboard, Lakebase catalog) attach to the live foundation. The VS endpoint is deployed in stage 1, and the bootstrap materializes the VS index before agent registration.
+3. **Produce data**: upload synthetic samples, run pipeline, materialize the VS index, configure Agent Bricks Knowledge Assistant + Supervisor Agent, wait for Lakebase to reach `AVAILABLE`.
+4. **Stage 2**: full `bundle deploy` — consumers (monitor, index-refresh job, app, dashboard, Lakebase catalog) attach to the live foundation. The VS endpoint is deployed in stage 1, and the bootstrap materializes the VS index before Knowledge Assistant configuration.
 5. `bundle run analyst_app`; UC grants chain (`USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE`).
 6. Smoke check on the analyst endpoint.
 
@@ -78,7 +78,7 @@ Expect: a markdown table with one row per company, segment-revenue values matchi
 DOCINTEL_CATALOG=workspace \
 DOCINTEL_SCHEMA=docintel_10k_demo \
 .venv/bin/python evals/clears_eval.py \
-  --endpoint analyst-agent-demo \
+  --endpoint "$(./scripts/resolve-agent-endpoint.sh demo)" \
   --dataset evals/dataset.jsonl
 ```
 
@@ -98,7 +98,7 @@ Note: the Lakebase instance enters a soft-delete state for ~7 days during which 
 |---|---|---|
 | `bundle validate` errors on `ai_parse_document` | Workspace lacks AI Functions GA | Move SQL warehouse to a recent serverless channel |
 | Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
-| Agent endpoint 401 from App | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and the App's `user_api_scopes` includes `serving.serving-endpoints` (workspace must have user-token-passthrough enabled — see `docs/runbook.md` §"Enabling end-to-end OBO") |
-| CLEARS Latency axis fails | Re-rank window too large | Reduce candidate window in `agent/retrieval.py` from 25 to 15 |
+| Agent endpoint 401 from App | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and the App's `user_api_scopes` includes `serving.serving-endpoints` (workspace must have user-token-passthrough enabled — see `docs/runbook.md` §"Verifying end-to-end OBO") |
+| CLEARS Latency axis fails | Agent Bricks orchestration or Knowledge Assistant source is too broad | Narrow the Knowledge Assistant source, tune Supervisor instructions, or reduce structured-tool fan-out |
 | Bootstrap blocks on Lakebase soft-delete | `lakebase_instance` name held by retention | Bump suffix in `databricks.yml` and retry |
-| `⚠ APP-LEVEL OBO IS OPERATIONALLY DISABLED` banner | Workspace lacks user-token-passthrough feature | Workspace admin enables the feature; uncomment `user_api_scopes` in `resources/consumers/analyst.app.yml`; redeploy |
+| App deploy fails on OBO scopes | Workspace lacks user-token-passthrough feature | Workspace admin enables the feature; this is a production prerequisite |

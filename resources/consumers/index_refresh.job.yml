@@ -31,8 +31,7 @@ resources:
           spec:
             client: "1"
             dependencies:
-              - databricks-vectorsearch>=0.40
-              - databricks-sdk>=0.40
+              - databricks-sdk>=0.105,<1
 
       permissions:
         - level: CAN_VIEW

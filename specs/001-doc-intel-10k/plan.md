@@ -5,15 +5,15 @@
 
 ## Summary
 
-Build a Databricks-native, governed pipeline + agent that turns SEC 10-K PDFs into a queryable lakehouse and a cited Q&A experience. SQL Lakeflow Spark Declarative Pipelines parse PDFs once with `ai_parse_document` (VARIANT), classify sections with `ai_classify`, extract structured KPIs with `ai_extract`, and score every section against a 5-dimension quality rubric. High-quality summaries flow into a Mosaic AI Vector Search index. A Mosaic AI Agent Framework agent (Knowledge Assistant + Custom Analyst Agent + Supervisor for cross-company fan-out) is logged via MLflow, registered in Unity Catalog, served behind AI Gateway, and surfaced through a Streamlit Databricks App with citation rendering and a feedback widget. Conversation history and feedback land in Lakebase Postgres. Lakehouse Monitoring tracks extraction drift; an AI/BI dashboard surfaces query-log content gaps. CLEARS evaluation in MLflow gates promotion. The entire stack is one Databricks Asset Bundle (`databricks bundle deploy -t demo|prod`).
+Build a Databricks-native, governed pipeline + Agent Bricks system that turns SEC 10-K PDFs into a queryable lakehouse and a cited Q&A experience. SQL Lakeflow Spark Declarative Pipelines parse PDFs once with `ai_parse_document` (VARIANT), classify sections with `ai_classify`, extract structured KPIs with `ai_extract`, and score every section against a 5-dimension quality rubric. High-quality summaries flow into a Mosaic AI Vector Search index. Agent Bricks Knowledge Assistant handles cited document Q&A; Agent Bricks Supervisor Agent coordinates the Knowledge Assistant with a deterministic Unity Catalog KPI function for cross-company comparisons. AI Gateway, Unity Catalog, and mandatory OBO enforce identity and audit. Conversation history and feedback land in Lakebase Postgres. Lakehouse Monitoring tracks extraction drift; an AI/BI dashboard surfaces query-log content gaps. CLEARS evaluation in MLflow gates promotion. The stack is deployed by DAB plus idempotent Agent Bricks bootstrap (`databricks bundle deploy -t demo|prod`, `scripts/bootstrap_agent_bricks.py`).
 
 ## Technical Context
 
 **Language/Version**: SQL (Databricks SQL on serverless) for parse/classify/extract pipelines; Python 3.11 for agent + app + eval
-**Primary Dependencies**: Lakeflow Spark Declarative Pipelines, Lakeflow Jobs, Mosaic AI Vector Search, Mosaic AI Agent Framework (`databricks-agents`, `mlflow >= 2.20`), Databricks Model Serving + AI Gateway, Databricks Apps (Streamlit), Lakebase Postgres, Lakehouse Monitoring, Databricks Asset Bundles CLI (`databricks` >= 0.260)
+**Primary Dependencies**: Lakeflow Spark Declarative Pipelines, Lakeflow Jobs, Mosaic AI Vector Search, Agent Bricks Knowledge Assistant and Supervisor Agent, AI Gateway, Databricks Apps (Streamlit), Lakebase Postgres, Lakehouse Monitoring, Databricks Asset Bundles CLI (`databricks` >= 0.260), MLflow Agent Evaluation
 **Storage**: Unity Catalog — `<catalog>.<schema>` with one volume (`raw_filings`) and Delta tables (`bronze_filings`, `silver_parsed_filings`, `gold_filing_sections`, `gold_filing_kpis`); Lakebase Postgres for `conversation_history`, `query_logs`, `feedback`
 **Testing**: `databricks bundle validate -t demo` (schema check), pytest for agent unit tests, MLflow `evaluate()` with `databricks-agents` evaluators for CLEARS, manual smoke via the deployed App
-**Target Platform**: Databricks workspace with serverless SQL warehouse (AI Functions GA), Mosaic AI Vector Search and Model Serving entitlements; agent endpoint runs on CPU instance behind AI Gateway
+**Target Platform**: Databricks workspace with serverless SQL warehouse (AI Functions GA), Mosaic AI Vector Search, Agent Bricks, Databricks Apps user-token passthrough, AI Gateway, Unity Catalog, and Lakebase enabled
 **Project Type**: Databricks lakehouse + agent stack delivered as a single DAB
 **Performance Goals**: Pipeline E2E ≤ 10 min P95 on a 30 MB PDF (SC-001); agent P95 ≤ 8s single-filing, ≤ 20s cross-company (SC-009); Vector Search refresh ≤ 5 min after Gold update
 **Constraints**: SQL only for parse/classify/extract layer; Python only for agent + app; CPU model serving (no GPU); zero hard-coded paths outside the bundle; one-command deploy; CLEARS thresholds C≥0.8, L p95≤8s, E≥0.95, A≥0.9, R≥0.8, S≥0.99 block promotion
@@ -66,13 +66,10 @@ resources/
 │   └── retention.job.yml                       # 90-day raw PDF cleanup
 ├── consumers/
 │   ├── index_refresh.job.yml                   # Vector Search index create/sync
-│   └── agent.serving.yml                       # Model Serving + AI Gateway
-├── monitors/
-│   └── kpi_drift.yml                           # Lakehouse Monitoring
-├── dashboards/
-│   └── usage.lvdash.yml                        # AI/BI Lakeview dashboard
-└── apps/
-    └── analyst.app.yml                         # Databricks App resource
+│   ├── kpi_drift.yml                           # Lakehouse Monitoring
+│   ├── usage.dashboard.yml                     # AI/BI Lakeview dashboard
+│   ├── lakebase_catalog.yml                    # Lakebase database catalog
+│   └── analyst.app.yml                         # Databricks App env binding to generated Agent Bricks endpoint
 
 pipelines/
 └── sql/
@@ -82,14 +79,9 @@ pipelines/
     └── 04_gold_quality.sql                     # 5-dim rubric → quality_score
 
 agent/
-├── analyst_agent.py                            # Mosaic AI Agent Framework
-├── supervisor.py                               # Cross-company fan-out
-├── retrieval.py                                # Hybrid keyword+semantic + re-rank
-├── tools.py                                    # UC Function tool wrapping gold_filing_kpis
-├── log_and_register.py                         # mlflow.pyfunc + UC registry
+├── tools.py                                    # deterministic KPI tool glue for Agent Bricks
 └── tests/
-    ├── test_retrieval.py
-    └── test_supervisor.py
+    └── test_tools.py
 
 app/
 ├── app.py                                      # Streamlit chat UI
@@ -100,6 +92,11 @@ evals/
 ├── dataset.jsonl                               # 30 questions: 20 P2 + 10 P3
 └── clears_eval.py                              # MLflow CLEARS gate
 
+scripts/
+├── bootstrap-demo.sh                           # staged deploy orchestration
+├── bootstrap_agent_bricks.py                   # Knowledge Assistant + Supervisor bootstrap
+└── wait_for_kpis.py
+
 .github/
 └── workflows/
     └── deploy.yml                              # validate on PR, deploy -t demo on merge
@@ -107,7 +104,7 @@ evals/
 CLAUDE.md                                       # Runtime guidance for Claude Code
 ```
 
-**Structure Decision**: Single DAB containing one pipeline, two jobs, one vector index, one serving endpoint, one Lakebase project, one monitor, one dashboard, one app, and a CI workflow. SQL pipeline code lives at the root under `pipelines/sql/`; Python agent and app code live at `agent/` and `app/`. This layout matches the `databricks-dabs` skill's recommended bundle-structure layout and the constitution's "declarative over imperative" principle.
+**Structure Decision**: Single DAB containing one pipeline, two jobs, one Vector Search endpoint, one Lakebase project, one monitor, one dashboard, one app, and a CI workflow. Agent Bricks resources are SDK-managed by `scripts/bootstrap_agent_bricks.py` until DAB exposes first-class Knowledge Assistant and Supervisor resource types. SQL pipeline code lives at the root under `pipelines/sql/`; deterministic tool glue lives at `agent/`; app code lives at `app/`.
 
 ## Phase 0 — Outline & Research
 
@@ -121,9 +118,9 @@ Output: [research.md](./research.md). Decisions captured:
 | Idempotency | `APPLY CHANGES INTO` keyed on `filename` for Silver and Gold | SDP native CDC, deterministic on re-upload, no Python helper | Hand-rolled MERGE (rejected: more code paths); content hash key (deferred — filename is sufficient for v1) |
 | Quality rubric | 5 dimensions × 0–6 scale; threshold ≥ 22/30; computed via `ai_query` calls in `04_gold_quality.sql` | Mirrors Reffy's 31-point pattern; SQL-native means no Python helper; explicit dimensions help debug rejections | Single `extraction_confidence` (rejected: no debuggability); 3-dim avg (rejected: too coarse) |
 | Vector Search index | Delta-Sync index over `gold_filing_sections` filtered by `embed_eligible`; embed `summary` column | Managed sync, no manual refresh; embeds curated content per principle IV | Direct Vector Index (rejected: no managed sync); embedding raw `parsed.text_full` (rejected: noise) |
-| Retrieval strategy | Hybrid (keyword + semantic) top-25 → re-rank → top-5 | Reffy pattern; re-rank tightens top-5 ordering; CPU re-rank stays in budget | Pure semantic (rejected: misses exact filings/years); re-rank against top-100 (rejected: latency budget) |
-| Agent framework | Mosaic AI Agent Framework via `databricks-agents` SDK + MLflow `pyfunc` | First-class Knowledge Assistant + Supervisor primitives; logged + registered in UC | LangGraph standalone (rejected: more glue, no UC registration story) |
-| Serving | CPU instance behind AI Gateway; identity passthrough on | Cost-first per Reffy; Gateway gives audit + rate limit + on-behalf-of | GPU (rejected: not needed at scale of pilot); raw endpoint (rejected: no governance layer) |
+| Retrieval strategy | Agent Bricks Knowledge Assistant over the governed document layer / Vector Search source | Demonstrates the Agent Bricks article pattern and removes custom retrieval/rerank serving code | Raw chunk search (rejected: ignores Document Intelligence quality layer) |
+| Agent framework | Agent Bricks Knowledge Assistant + Supervisor Agent | First-class governed enterprise agent primitives; aligns with the source articles | Custom `mlflow.pyfunc` analyst agent (rejected: caused deploy-order and serving lifecycle failures); LangGraph standalone (rejected: not the reference pattern) |
+| Serving | Agent Bricks endpoint behind AI Gateway with mandatory OBO | Gateway gives audit, rate limits, guardrails, and identity enforcement | Bespoke custom endpoint ownership (rejected: custom lifecycle); service-principal auth for document Q&A (rejected: not production-safe) |
 | State store | Lakebase Postgres (managed) | Native to platform, low-latency reads/writes, fits Reffy pattern; integrates with Apps | Delta tables (rejected: write throughput on small turn-level updates); external Postgres (rejected: governance gap) |
 | Eval framework | MLflow `evaluate()` with `databricks-agents` evaluators on CLEARS axes | First-class CLEARS support; logged into MLflow runs | LangSmith / Ragas (rejected: external system) |
 | Monitoring | Lakehouse Monitoring `inference` profile on `gold_filing_kpis`; Lakeview AI/BI dashboard on `query_logs` | First-class drift detection; usage dashboard surfaces content gaps per Reffy | Custom Spark notebooks (rejected: imperative, principle III) |
@@ -152,7 +149,7 @@ Output: `data-model.md`, `contracts/`, `quickstart.md`, plus the agent context u
 ### Contracts
 
 - `contracts/kpi-schema.json` — JSON schema passed to `ai_extract` (revenue, ebitda, segment_revenue, top_risks, fiscal_year, company_name, extraction_confidence)
-- `contracts/agent-request.json` — `{question: string, top_k?: int, company_filter?: string}`
+- `contracts/agent-request.json` — normalized app request metadata around an Agent Bricks user message
 - `contracts/agent-response.json` — `{answer: string, citations: [{filename, section_label, score, char_offset?}], latency_ms: int, retrieved_count: int}`
 - `contracts/feedback-event.json` — `{conversation_id, turn_id, user_id, rating: "up"|"down", comment?: string, ts}`
 

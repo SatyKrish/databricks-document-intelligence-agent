@@ -14,20 +14,16 @@ import streamlit as st
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.config import Config
 
+from app.agent_bricks_client import invoke_agent_endpoint
+from app.agent_bricks_response import normalise_agent_response
 from app import lakebase_client
 
 
-AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set via resource binding in resources/consumers/analyst.app.yml
-
-
-@st.cache_resource
-def _sp_client() -> WorkspaceClient:
-    """Service-principal-scoped client for app-owned operations (Lakebase init, etc.)."""
-    return WorkspaceClient()
+AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set by resources/consumers/analyst.app.yml
 
 
 @st.cache_resource(ttl=3600)
-def _user_client(token: str | None) -> WorkspaceClient:
+def _user_client(token: str) -> WorkspaceClient:
     """User-scoped (OBO) client built from the request's x-forwarded-access-token.
 
     Databricks Apps OBO docs:
@@ -37,10 +33,9 @@ def _user_client(token: str | None) -> WorkspaceClient:
     token never refreshes. Long-lived sessions should reload the page after
     permission changes.
 
-    `token=None` → SP fallback (local dev, or unauthenticated requests).
+    Missing tokens are a deployment prerequisite failure. Production must run
+    through Databricks Apps user-token passthrough.
     """
-    if not token:
-        return _sp_client()
     return WorkspaceClient(config=Config(
         host=os.environ["DATABRICKS_HOST"],
         token=token,
@@ -48,7 +43,13 @@ def _user_client(token: str | None) -> WorkspaceClient:
 
 
 def _agent_client() -> WorkspaceClient:
-    return _user_client(st.context.headers.get("x-forwarded-access-token"))
+    token = st.context.headers.get("x-forwarded-access-token")
+    if not token:
+        raise RuntimeError(
+            "Databricks Apps user-token passthrough is required; no "
+            "x-forwarded-access-token header was present."
+        )
+    return _user_client(token)
 
 
 def _user_email() -> str:
@@ -57,15 +58,11 @@ def _user_email() -> str:
 
 def _query_agent(question: str, conversation_id: str) -> dict:
     try:
-        out = _agent_client().serving_endpoints.query(
-            name=AGENT_ENDPOINT,
-            inputs=[{"question": question, "conversation_id": conversation_id, "top_k": 5}],
-        )
-        raw = out.predictions if hasattr(out, "predictions") else out["predictions"]
-        return raw[0] if isinstance(raw, list) else raw
+        payload = invoke_agent_endpoint(_agent_client(), AGENT_ENDPOINT, question, client_request_id=conversation_id)
+        return normalise_agent_response(payload, conversation_id=conversation_id)
     except Exception as exc:
         return {
-            "answer": "The analyst agent is unavailable right now. Please try again.",
+            "answer": "The Agent Bricks supervisor endpoint is unavailable right now. Please try again.",
             "grounded": False,
             "citations": [],
             "latency_ms": 0,
@@ -94,7 +91,11 @@ def _render_citations(citations: list[dict]) -> None:
     cols = st.columns(min(len(citations), 4))
     for i, c in enumerate(citations[:4]):
         with cols[i]:
-            st.markdown(f"**`{c['filename']}`**\n\n{c['section_label']} — score {c['score']:.2f}")
+            filename = c.get("filename") or c.get("doc_uri") or c.get("source") or "source"
+            section = c.get("section_label") or c.get("title") or c.get("name") or "citation"
+            score = c.get("score")
+            suffix = f" - score {score:.2f}" if isinstance(score, (float, int)) else ""
+            st.markdown(f"**`{filename}`**\n\n{section}{suffix}")
             if c.get("snippet"):
                 st.caption(c["snippet"])
 
