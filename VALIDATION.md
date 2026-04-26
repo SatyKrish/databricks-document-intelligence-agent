@@ -7,8 +7,8 @@ Use this guide to prove the reference implementation works in a Databricks works
 ```bash
 python3 -m py_compile \
   agent/tools.py \
-  app/app.py app/lakebase_client.py \
-  evals/clears_eval.py scripts/bootstrap_agent_bricks.py \
+  app/app.py app/agent_bricks_client.py app/agent_bricks_response.py app/lakebase_client.py \
+  evals/clears_eval.py agent/agent_bricks.py \
   scripts/wait_for_kpis.py samples/synthesize.py
 
 bash -n scripts/bootstrap-demo.sh
@@ -41,9 +41,11 @@ Expected outcomes:
 - Pipeline creates Gold rows.
 - Agent Bricks Knowledge Assistant and Supervisor Agent are created or updated.
 - Consumer resources deploy cleanly.
-- App config is applied with `bundle run analyst_app`.
+- App config is applied with `bundle run analyst_app`, including `DOCINTEL_AGENT_ENDPOINT` set from the generated Supervisor endpoint name.
 - Bootstrap verifies mandatory OBO scopes.
 - Smoke query reaches the Agent Bricks supervisor endpoint.
+
+If `bundle run analyst_app` fails with `Databricks Apps - user token passthrough feature is not enabled`, the Agent Bricks path is still deployable but the app is not production-valid in that workspace. Enable the workspace/org feature and rerun bootstrap. Do not bypass OBO.
 
 ## Data Checks
 
@@ -73,7 +75,7 @@ python evals/clears_eval.py \
 Expected:
 
 - Correctness, adherence, relevance, execution, safety, and latency thresholds pass.
-- P2 and P3 correctness slices are logged.
+- P2 and P3 correctness slices are logged when the active MLflow/databricks-agents metric output includes per-row correctness columns. Current 1.x aggregate outputs may not expose those slice columns; treat missing slices as validation evidence to record, not as a reason to bypass the aggregate gate.
 - No citations reference `garbage_10K_2024.pdf`.
 
 ## App Checks
@@ -86,7 +88,34 @@ Expected:
 ## OBO Verification
 
 - Confirm `resources/consumers/analyst.app.yml:user_api_scopes` is present.
-- Run `databricks bundle deploy -t demo && databricks bundle run -t demo analyst_app`.
+- Run:
+  ```bash
+  AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
+  databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+  databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
+  ```
 - Confirm bootstrap or CI verifies `serving.serving-endpoints` and `sql` scopes.
 - Check audit logs for user-scoped downstream access through Agent Bricks, Knowledge Assistant, and the structured KPI SQL function.
 - If the workspace cannot grant user-token passthrough, deployment is invalid and must fail.
+
+## Latest Demo Snapshot
+
+As of 2026-04-26, the demo workspace evidence is:
+
+- Bundle validation passed with the resolved Agent Bricks Supervisor endpoint.
+- Agent Bricks bootstrap succeeded:
+  - Knowledge Assistant display name: `doc-intel-knowledge-demo`
+  - Supervisor display name: `doc-intel-supervisor-demo`
+  - UC function: `workspace.docintel_10k_demo.lookup_10k_kpis`
+- Direct Supervisor endpoint smoke passed. The ACME FY2024 revenue question returned `$94.2 billion` with a parsed `ACME_10K_2024.pdf` citation.
+- Databricks App deploy was blocked by workspace configuration: Databricks Apps user-token passthrough was not enabled.
+- CLEARS live eval completed but failed the configured gate:
+  - MLflow run ID: `772e902cab92459f9bf569296fc5f801`
+  - correctness: `0.323`
+  - adherence: `0.000`
+  - relevance/groundedness: `0.516`
+  - safety: `1.000`
+  - execution: `1.000`
+  - latency p95: `31711ms`
+
+Status: Agent Bricks deployment mechanics and direct serving smoke passed. Reference-ready quality and app-level OBO readiness remain open.

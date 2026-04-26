@@ -104,7 +104,7 @@ while True:
           databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" doc_intel_pipeline
           python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
           databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" --var "agent_endpoint_name=$AGENT_ENDPOINT_NAME" index_refresh
-          python scripts/bootstrap_agent_bricks.py \
+          python -m agent.agent_bricks \
             --target demo \
             --catalog "$DOCINTEL_CATALOG" \
             --schema "$DOCINTEL_SCHEMA" \
@@ -132,7 +132,7 @@ while True:
 
       - name: Verify OBO scopes survived deploy
         # `bundle run` may wipe user_api_scopes (documented destructive-update
-        # behavior). Fail loudly because user-token passthrough is mandatory.
+        # behavior). Fail loudly if required user scopes are missing.
         run: |
           databricks apps get doc-intel-analyst-demo --output json > /tmp/app.json
           python -c "

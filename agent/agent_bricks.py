@@ -1,15 +1,4 @@
-"""Create or update the Agent Bricks runtime for the document intelligence app.
-
-This is the production agent bootstrap path. It configures:
-
-* Agent Bricks Knowledge Assistant over the governed Vector Search source.
-* A deterministic Unity Catalog SQL function for structured KPI lookups.
-* Agent Bricks Supervisor Agent that coordinates the Knowledge Assistant and
-  the KPI function.
-
-The earlier hand-built MLflow pyfunc agent runtime is intentionally not part of
-this path.
-"""
+"""Agent Bricks definition and SDK application logic."""
 
 from __future__ import annotations
 
@@ -18,7 +7,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Iterable, TypeVar
 
 from databricks.sdk import WorkspaceClient
@@ -36,6 +25,24 @@ from databricks.sdk.service.supervisoragents import SupervisorAgent, Tool, UcFun
 
 
 T = TypeVar("T")
+
+
+@dataclass
+class AgentBricksRuntime:
+    knowledge_assistant: KnowledgeAssistant
+    supervisor_agent: SupervisorAgent
+    kpi_function: str
+    supervisor_endpoint: str
+    knowledge_endpoint: str
+
+    def as_dict(self) -> dict:
+        return {
+            "knowledge_assistant": _as_dict(self.knowledge_assistant),
+            "supervisor_agent": _as_dict(self.supervisor_agent),
+            "kpi_function": self.kpi_function,
+            "supervisor_endpoint": self.supervisor_endpoint,
+            "knowledge_endpoint": self.knowledge_endpoint,
+        }
 
 
 def _find_by_display_name(items: Iterable[T], display_name: str) -> T | None:
@@ -162,7 +169,6 @@ def _ensure_knowledge_assistant(
     w: WorkspaceClient,
     *,
     display_name: str,
-    endpoint_name: str,
     index_name: str,
 ) -> KnowledgeAssistant:
     description = (
@@ -179,7 +185,6 @@ def _ensure_knowledge_assistant(
     existing = _find_by_display_name(w.knowledge_assistants.list_knowledge_assistants(), display_name)
     desired = KnowledgeAssistant(
         display_name=display_name,
-        endpoint_name=endpoint_name,
         description=description,
         instructions=instructions,
     )
@@ -239,7 +244,6 @@ def _ensure_supervisor(
     w: WorkspaceClient,
     *,
     display_name: str,
-    endpoint_name: str,
     knowledge_assistant: KnowledgeAssistant,
     kpi_function_name: str,
 ) -> SupervisorAgent:
@@ -255,7 +259,6 @@ def _ensure_supervisor(
     )
     desired = SupervisorAgent(
         display_name=display_name,
-        endpoint_name=endpoint_name,
         description=description,
         instructions=instructions,
     )
@@ -277,7 +280,6 @@ def _ensure_supervisor(
         ),
         knowledge_assistant=SupervisorKnowledgeAssistant(
             knowledge_assistant_id=knowledge_assistant.id or _id_from_name(knowledge_assistant.name),
-            serving_endpoint_name=knowledge_assistant.endpoint_name,
         ),
     )
     kpi_tool = Tool(
@@ -368,6 +370,56 @@ def _grant_endpoint_query(w: WorkspaceClient, endpoint_name: str, group_name: st
     )
 
 
+def deploy_agent_bricks_runtime(
+    w: WorkspaceClient,
+    *,
+    target: str,
+    catalog: str,
+    schema: str,
+    warehouse_id: str,
+    analyst_group: str,
+) -> AgentBricksRuntime:
+    index_name = f"{catalog}.{schema}.filings_summary_idx"
+
+    kpi_function_name = _create_or_update_kpi_function(
+        w,
+        catalog=catalog,
+        schema=schema,
+        warehouse_id=warehouse_id,
+    )
+    knowledge_assistant = _ensure_knowledge_assistant(
+        w,
+        display_name=f"doc-intel-knowledge-{target}",
+        index_name=index_name,
+    )
+    supervisor = _ensure_supervisor(
+        w,
+        display_name=f"doc-intel-supervisor-{target}",
+        knowledge_assistant=knowledge_assistant,
+        kpi_function_name=kpi_function_name,
+    )
+
+    if not supervisor.endpoint_name:
+        raise RuntimeError(f"Supervisor Agent doc-intel-supervisor-{target} did not return an endpoint_name")
+    if not knowledge_assistant.endpoint_name:
+        raise RuntimeError(f"Knowledge Assistant doc-intel-knowledge-{target} did not return an endpoint_name")
+
+    actual_supervisor_endpoint = supervisor.endpoint_name
+    actual_knowledge_endpoint = knowledge_assistant.endpoint_name
+
+    _grant_endpoint_query(w, actual_supervisor_endpoint, analyst_group)
+    if actual_knowledge_endpoint:
+        _grant_endpoint_query(w, actual_knowledge_endpoint, analyst_group)
+
+    return AgentBricksRuntime(
+        knowledge_assistant=knowledge_assistant,
+        supervisor_agent=supervisor,
+        kpi_function=kpi_function_name,
+        supervisor_endpoint=actual_supervisor_endpoint,
+        knowledge_endpoint=actual_knowledge_endpoint,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", default=os.environ.get("DOCINTEL_TARGET", "demo"))
@@ -375,55 +427,20 @@ def main() -> int:
     parser.add_argument("--schema", default=os.environ.get("DOCINTEL_SCHEMA"))
     parser.add_argument("--warehouse-id", default=os.environ.get("DOCINTEL_WAREHOUSE_ID"))
     parser.add_argument("--analyst-group", default=os.environ.get("DOCINTEL_ANALYST_GROUP", "account users"))
-    parser.add_argument("--requested-supervisor-endpoint")
-    parser.add_argument("--requested-knowledge-endpoint")
-    parser.add_argument("--supervisor-endpoint", dest="requested_supervisor_endpoint", help=argparse.SUPPRESS)
-    parser.add_argument("--knowledge-endpoint", dest="requested_knowledge_endpoint", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if not args.catalog or not args.schema or not args.warehouse_id:
         parser.error("--catalog, --schema, and --warehouse-id are required")
 
-    target = args.target
-    requested_supervisor_endpoint = args.requested_supervisor_endpoint or f"analyst-agent-{target}"
-    requested_knowledge_endpoint = args.requested_knowledge_endpoint or f"doc-intel-knowledge-{target}"
-    index_name = f"{args.catalog}.{args.schema}.filings_summary_idx"
-
-    w = WorkspaceClient()
-    kpi_function_name = _create_or_update_kpi_function(
-        w,
+    runtime = deploy_agent_bricks_runtime(
+        WorkspaceClient(),
+        target=args.target,
         catalog=args.catalog,
         schema=args.schema,
         warehouse_id=args.warehouse_id,
+        analyst_group=args.analyst_group,
     )
-    knowledge_assistant = _ensure_knowledge_assistant(
-        w,
-        display_name=f"doc-intel-knowledge-{target}",
-        endpoint_name=requested_knowledge_endpoint,
-        index_name=index_name,
-    )
-    supervisor = _ensure_supervisor(
-        w,
-        display_name=f"doc-intel-supervisor-{target}",
-        endpoint_name=requested_supervisor_endpoint,
-        knowledge_assistant=knowledge_assistant,
-        kpi_function_name=kpi_function_name,
-    )
-
-    actual_supervisor_endpoint = supervisor.endpoint_name or requested_supervisor_endpoint
-    actual_knowledge_endpoint = knowledge_assistant.endpoint_name or requested_knowledge_endpoint
-
-    _grant_endpoint_query(w, actual_supervisor_endpoint, args.analyst_group)
-    if actual_knowledge_endpoint:
-        _grant_endpoint_query(w, actual_knowledge_endpoint, args.analyst_group)
-
-    print(json.dumps({
-        "knowledge_assistant": _as_dict(knowledge_assistant),
-        "supervisor_agent": _as_dict(supervisor),
-        "kpi_function": kpi_function_name,
-        "supervisor_endpoint": actual_supervisor_endpoint,
-        "knowledge_endpoint": actual_knowledge_endpoint,
-    }, indent=2, default=str))
+    print(json.dumps(runtime.as_dict(), indent=2, default=str))
     return 0
 
 

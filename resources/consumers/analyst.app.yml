@@ -12,8 +12,8 @@ resources:
 
       # Databricks Apps auto-grants Lakebase permissions to the App SP on
       # deploy — see https://docs.databricks.com/aws/en/dev-tools/databricks-apps/access-data.
-      # Agent Bricks endpoint access is granted to the analyst group by
-      # scripts/bootstrap_agent_bricks.py because calls use OBO user identity.
+      # Agent Bricks endpoint access is granted by agent/agent_bricks.py
+      # because calls use OBO user identity.
       resources:
         - name: docintel-lakebase
           database:
@@ -21,10 +21,9 @@ resources:
             instance_name: ${var.lakebase_instance}
             permission: CAN_CONNECT_AND_CREATE
 
-      # Mandatory OBO scopes (Databricks Apps IAM/auth docs:
-      # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/iam-auth)
-      # require the workspace-level "Databricks Apps - user token passthrough".
-      # Deployment must fail if the workspace cannot grant these scopes.
+      # Mandatory OBO scopes. Requires the workspace-level "Databricks Apps -
+      # user token passthrough" feature.
+      # Docs: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/iam-auth
       user_api_scopes:
         - serving.serving-endpoints
         - sql

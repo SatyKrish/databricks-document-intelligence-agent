@@ -35,26 +35,42 @@ If a filing scores below threshold:
 
 ## Update Agent Bricks configuration
 
-Agent Bricks resources are managed by `scripts/bootstrap_agent_bricks.py`. Run it after changes to Knowledge Assistant instructions, Supervisor instructions, or the KPI tool function:
+Agent Bricks resources are defined and applied by `agent/agent_bricks.py`. Run it after changes to Knowledge Assistant instructions, Supervisor instructions, or the KPI tool function:
 
 ```bash
 DOCINTEL_CATALOG=<catalog> \
 DOCINTEL_SCHEMA=<schema> \
 DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
-python scripts/bootstrap_agent_bricks.py --target demo
+python -m agent.agent_bricks --target demo
 ```
 
 This creates or updates the Knowledge Assistant, syncs the Vector Search knowledge source, creates or updates the UC SQL KPI function, and wires both into the Supervisor Agent endpoint.
+
+Agent Bricks generates concrete serving endpoint names. After bootstrap, always resolve the live Supervisor endpoint before deploying or restarting the app:
+
+```bash
+AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
+databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
+```
+
+The app receives the generated endpoint as `DOCINTEL_AGENT_ENDPOINT`.
+
+## Agent Bricks invocation and citations
+
+The app and eval runner invoke the generated Supervisor endpoint through `POST /serving-endpoints/{endpoint}/invocations` with the user's OBO token. They do not use `WorkspaceClient.serving_endpoints.query()` for Agent Bricks calls because workspace validation showed that path did not preserve the needed Agent Bricks response shape.
+
+Current Agent Bricks output is an OpenAI Responses-style `output` message sequence. `app/agent_bricks_response.py` displays the last output text group as the final answer. Knowledge Assistant citations were observed during 2026-04-26 validation as markdown footnotes in intermediate messages, such as `[^p1]: ... _ACME_10K_2024.pdf_`; the app extracts filenames from those footnotes for citation chips. If citation chips show only `source`, capture a live payload and grep for `[^` and `.pdf_` to confirm whether the Knowledge Assistant citation format changed.
 
 ## Inspect CLEARS metrics in MLflow
 
 CI resolves the generated Agent Bricks Supervisor serving endpoint, then runs `python evals/clears_eval.py --endpoint "$AGENT_ENDPOINT_NAME"` after each `demo` deploy. Look for the experiment `/Shared/docintel-clears-<user>`; each run logs:
 
 - Per-axis metrics: `correctness`, `adherence`, `relevance`, `execution`, `safety`, `latency_p95_ms`
-- Per-category slices: `p2_correctness`, `p3_correctness`
 - Per-question latency: `latency_ms_<id>`
+- Per-category slices: `p2_correctness`, `p3_correctness`, only when the active MLflow/databricks-agents output includes per-row correctness columns
 
-Failures are logged as a JSON list under the run tag `failures`. The script exit-code-fails the deploy if any threshold is missed (FR-010, SC-002, SC-003).
+Metric key names can vary across MLflow/databricks-agents versions. The eval runner maps current aggregate keys such as `correctness/percentage`, `guideline_adherence/percentage`, `groundedness/percentage`, and `safety/percentage` to the CLEARS axes. Failures are logged as a JSON list under the run tag `failures`. The script exit-code-fails the deploy if any threshold is missed (FR-010, SC-002, SC-003).
 
 ## Common failure modes
 
@@ -62,21 +78,21 @@ Failures are logged as a JSON list under the run tag `failures`. The script exit
 |---|---|---|
 | `bundle validate` fails on `ai_parse_document` | Workspace lacks AI Functions GA | Move SQL warehouse to a recent serverless channel |
 | Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
+| `DOCINTEL_AGENT_ENDPOINT` is `UNSET_AGENT_BRICKS_ENDPOINT` | Bundle deploy/run omitted the generated endpoint variable | Re-run with `--var "agent_endpoint_name=$(./scripts/resolve-agent-endpoint.sh demo)"` |
 | Agent endpoint 401 | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and `resources/consumers/analyst.app.yml:user_api_scopes` includes `serving.serving-endpoints` and `sql` |
+| App deploy fails with `Databricks Apps - user token passthrough feature is not enabled` | Workspace/org prerequisite missing | Enable the Databricks Apps user-token passthrough feature and rerun bootstrap |
 | Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (documented destructive-update behavior — see [Databricks Apps deploy docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy)) | Re-apply: `databricks apps update doc-intel-analyst-demo --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read` |
+| Bootstrap cannot grant Agent Bricks endpoint query permission | Permissions API was called with endpoint name instead of internal endpoint ID, or the generated endpoint is not ready | Use current `agent/agent_bricks.py`; it waits for readiness and grants by serving endpoint ID |
 | Streamlit user sees stale UC permissions | OBO token captured at WebSocket open; never refreshes ([Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)) | Reload the page after permission changes |
 | Lakebase tables not writable from deployed App | Local-dev `streamlit run` initialised schema under user identity, not App SP | Connect as App SP and `DROP TABLE feedback, query_logs, conversation_history`; next App run re-creates them under SP. See `app/README.md` |
 | CLEARS Latency axis fails | Agent Bricks orchestration or Knowledge Assistant source is too broad | Narrow the Knowledge Assistant source, tune Supervisor instructions, or reduce structured-tool fan-out |
+| Citation chips render but filenames show `source` | Knowledge Assistant footnote format changed or omitted filename markers | Capture the raw Agent Bricks payload and compare it with `app/agent_bricks_response.py`'s markdown-footnote parser |
 | App errors connecting to Lakebase | Database resource binding missing Postgres env vars | Check the `docintel-lakebase` resource binding and `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` in the App runtime |
 
 ## Verifying end-to-end OBO
 
-Databricks Apps user-token passthrough, Agent Bricks OBO, AI Gateway identity enforcement, and UC grants are production prerequisites. Bootstrap must fail if any required scope or workspace feature is missing.
-
-To verify OBO end-to-end:
-
 1. **Workspace admin** enables the "Databricks Apps - user token passthrough" feature in workspace settings.
-2. Confirm the `user_api_scopes` block in `resources/consumers/analyst.app.yml` is present. Required scopes for the analyst app's call chain:
+2. Confirm the required scopes are declared in `resources/consumers/analyst.app.yml`:
    ```yaml
    user_api_scopes:
      - serving.serving-endpoints     # invoke Agent Bricks endpoint as user
@@ -84,7 +100,12 @@ To verify OBO end-to-end:
      - iam.access-control:read        # default
      - iam.current-user:read          # default
    ```
-3. Redeploy: `databricks bundle deploy -t demo && databricks bundle run -t demo analyst_app`.
+3. Redeploy:
+   ```bash
+   AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
+   databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+   databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
+   ```
 4. Verify: bootstrap scope checks assert required scopes. Visit the deployed app, ask a question, and confirm in audit logs that Agent Bricks, Knowledge Assistant, and structured KPI SQL calls run under the invoking user's identity.
 
 ## CLEARS thresholds
@@ -106,25 +127,31 @@ Changing any threshold requires a constitution amendment per the Governance sect
 
 ## v1 baseline
 
-(populate after the first successful `demo` deploy)
+No passing v1 baseline has been recorded yet. Latest demo evidence as of 2026-04-26:
 
 ```
-MLflow run ID:   <fill in>
-Deployed at:     <date>
-P2 correctness:  <value>
-P3 correctness:  <value>
-Latency p95:     <ms>
+MLflow run ID:       772e902cab92459f9bf569296fc5f801
+Deployed at:         2026-04-26
+Correctness:         0.323
+Adherence:           0.000
+Relevance/grounding: 0.516
+Safety:              1.000
+Execution:           1.000
+Latency p95:         31711 ms
+P2/P3 slices:        unavailable in the current aggregate metric output
 ```
+
+Do not promote this as reference-ready until CLEARS passes and Databricks Apps user-token passthrough is enabled in the target workspace.
 
 ## Known deploy ordering gaps
 
 The bundle has three chicken-egg dependencies that a single `bundle deploy` cannot
 resolve on a fresh workspace. Each needs a phase-2 step after a prior side effect:
 
-1. **Databricks App binds to an Agent Bricks endpoint**
+1. **Databricks App needs the generated Agent Bricks endpoint name**
    - Agent Bricks generates concrete Knowledge Assistant and Supervisor serving
      endpoint names.
-   - `scripts/bootstrap_agent_bricks.py` returns the generated Supervisor
+   - `agent/agent_bricks.py` returns the generated Supervisor
      endpoint, and `resources/consumers/analyst.app.yml` injects it into
      `DOCINTEL_AGENT_ENDPOINT` via the `agent_endpoint_name` bundle variable.
    - **Fix**: bootstrap creates data and Agent Bricks resources before the full

@@ -1,9 +1,7 @@
 """Deterministic KPI tool glue for Agent Bricks.
 
 The production tool is a Unity Catalog SQL function created by
-`scripts/bootstrap_agent_bricks.py`. These helpers keep the SQL access pattern
-testable and available for local validation without reintroducing a custom
-agent runtime.
+`agent.agent_bricks`. These helpers keep the SQL access pattern testable.
 """
 
 from __future__ import annotations

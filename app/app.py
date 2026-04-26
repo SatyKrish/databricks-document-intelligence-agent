@@ -32,9 +32,6 @@ def _user_client(token: str) -> WorkspaceClient:
     the initial HTTP request, then the connection switches to WebSocket — the
     token never refreshes. Long-lived sessions should reload the page after
     permission changes.
-
-    Missing tokens are a deployment prerequisite failure. Production must run
-    through Databricks Apps user-token passthrough.
     """
     return WorkspaceClient(config=Config(
         host=os.environ["DATABRICKS_HOST"],

@@ -2,25 +2,16 @@
 
 ## Supported Security Posture
 
-This reference is designed for Databricks workspaces using Unity Catalog, Agent Bricks, AI Gateway, Databricks Apps resource bindings, and mandatory end-to-end on-behalf-of (OBO) user identity.
-
-## Identity Modes
-
-| Mode | Use | Production row-level security |
-|---|---|---|
-| End-to-end OBO | Demo and production analyst use | Yes, after audit verification |
-
-Service-principal fallback is not supported for the agent path. If Databricks Apps user-token passthrough, Agent Bricks OBO, or AI Gateway identity enforcement is unavailable, deployment must fail with an actionable prerequisite error.
+This reference is designed for Databricks workspaces using Unity Catalog, Agent Bricks, AI Gateway, Databricks Apps resource bindings, and end-to-end on-behalf-of (OBO) user identity. The App requires the request's `x-forwarded-access-token`; missing tokens fail loudly.
 
 ## Enabling End-To-End OBO
 
 1. Workspace admin enables Databricks Apps user-token passthrough.
-2. Declare the required `user_api_scopes` in `resources/consumers/analyst.app.yml`.
-3. Redeploy and run the app resource.
-4. Verify `serving.serving-endpoints` and `sql` scopes are present after deployment.
-5. Verify audit logs show downstream calls under the invoking user where required.
+2. Redeploy and run the app resource. The deploy fails if the workspace cannot grant the declared `user_api_scopes`.
+3. Verify `serving.serving-endpoints` and `sql` scopes are present after deployment.
+4. Verify audit logs show downstream calls under the invoking user where required.
 
-Agent Bricks / AI Gateway must enforce downstream access to document Q&A, SQL tools, models, and any external tools under the invoking user's identity. The previous custom MLflow auth-policy path has been removed from the production implementation.
+Agent Bricks / AI Gateway enforce downstream access to document Q&A, SQL tools, models, and any external tools under the invoking user's identity.
 
 ## Secrets And Credentials
 

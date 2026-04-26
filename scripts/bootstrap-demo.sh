@@ -111,7 +111,7 @@ set_agent_endpoint_name() {
 
 run_agent_bricks_bootstrap() {
   local bootstrap_json endpoint
-  bootstrap_json=$("$PYTHON" scripts/bootstrap_agent_bricks.py \
+  bootstrap_json=$("$PYTHON" -m agent.agent_bricks \
     --target "$TARGET" \
     --catalog "$DOCINTEL_CATALOG" \
     --schema "$DOCINTEL_SCHEMA" \
@@ -308,11 +308,9 @@ databricks api patch \
   --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" \
   >/dev/null 2>&1 || log "  warn: schema grants failed (may already be applied; UC dedupes)"
 
-# OBO scope verification (only meaningful when user_api_scopes is declared).
-if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml 2>/dev/null; then
-  log "  verifying OBO scopes on $APP_NAME"
-  if app_state=$(databricks apps get "$APP_NAME" --output json 2>/dev/null); then
-    "$PYTHON" -c "
+log "  verifying OBO scopes on $APP_NAME"
+if app_state=$(databricks apps get "$APP_NAME" --output json 2>/dev/null); then
+  "$PYTHON" -c "
 import json
 app = json.loads('''$app_state''')
 scopes = set(app.get('user_api_scopes') or [])
@@ -322,11 +320,8 @@ if missing:
     raise SystemExit(f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})')
 print(f'  OBO scopes intact: {sorted(scopes)}')
 " || die "OBO scopes missing after deploy"
-  else
-    die "unable to read app state for OBO verification"
-  fi
 else
-  die "resources/consumers/analyst.app.yml must declare user_api_scopes; OBO is mandatory"
+  die "unable to read app state for OBO verification"
 fi
 
 # ─── Step 6: smoke check ─────────────────────────────────────────────────────
