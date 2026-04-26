@@ -36,6 +36,9 @@ variables:
   analyst_group:
     description: UC group granted SELECT/USE on the catalog/schema
     default: account users
+  agent_endpoint_name:
+    description: Agent Bricks Supervisor serving endpoint name resolved by bootstrap_agent_bricks.py
+    default: UNSET_AGENT_BRICKS_ENDPOINT
 
 targets:
   demo:

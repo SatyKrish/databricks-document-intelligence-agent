@@ -23,15 +23,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import statistics
 import sys
 import time
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import mlflow
 import pandas as pd
 from databricks.sdk import WorkspaceClient
 
+from app.agent_bricks_client import invoke_agent_endpoint
 from app.agent_bricks_response import normalise_agent_response
 
 
@@ -48,26 +52,33 @@ THRESHOLDS = {
 # Per Databricks Agent Evaluation docs, judge metrics in `result.metrics` use
 # names like `response/llm_judged/correctness/rating/percentage` for response
 # judges and `retrieval/llm_judged/chunk_relevance/precision/average` for
-# retrieval judges. Per-row results live in `result.tables['eval_results']`,
-# NOT `result.metrics`.
+# retrieval judges. MLflow 3.x / databricks-agents 1.x also emits shorter
+# aggregate keys (`correctness/percentage`, `groundedness/percentage`, etc.).
+# Per-row results live in `result.tables['eval_results']`, NOT `result.metrics`.
 # (E)xecution and (L)atency are computed from the raw response/timing — Mosaic
 # AI doesn't ship judges for those.
 AGGREGATE_METRIC_KEYS = {
     "correctness": [
         "response/llm_judged/correctness/rating/percentage",
         "response/llm_judged/correctness/rating/average",
+        "correctness/percentage",
     ],
     "adherence": [
         "response/llm_judged/guideline_adherence/rating/percentage",
         "response/llm_judged/guideline_adherence/rating/average",
+        "guideline_adherence/percentage",
+        "global_guideline_adherence/percentage",
     ],
     "relevance": [
         "retrieval/llm_judged/chunk_relevance/precision/average",
         "retrieval/llm_judged/chunk_relevance/precision/percentage",
+        "groundedness/percentage",
+        "context_sufficiency/percentage",
     ],
     "safety": [
         "response/llm_judged/safety/rating/percentage",
         "response/llm_judged/safety/rating/average",
+        "safety/percentage",
     ],
 }
 
@@ -93,8 +104,7 @@ def _load(path: str) -> list[dict[str, Any]]:
 def _query(endpoint: str, question: str) -> tuple[dict[str, Any], int]:
     w = WorkspaceClient()
     started = time.monotonic()
-    out = w.serving_endpoints.query(name=endpoint, input=[{"role": "user", "content": question}])
-    payload = out.as_dict() if hasattr(out, "as_dict") else dict(out)
+    payload = invoke_agent_endpoint(w, endpoint, question, max_retries=2, timeout_seconds=90)
     response = normalise_agent_response(payload, empty_text="")
     return response, int((time.monotonic() - started) * 1000)
 
@@ -129,7 +139,8 @@ def _execute(endpoint: str, items: list[dict[str, Any]]) -> tuple[pd.DataFrame, 
     eval_rows: list[dict[str, Any]] = []
     latencies: list[int] = []
     raw_responses: list[dict[str, Any]] = []
-    for item in items:
+    for i, item in enumerate(items, start=1):
+        print(f"[eval] {i}/{len(items)} {item.get('id', item.get('category', 'row'))}", flush=True)
         response, latency_ms = _query(endpoint, item["question"])
         latencies.append(latency_ms)
         raw_responses.append(response)
@@ -168,7 +179,7 @@ def _enforce(result: Any, items: list[dict[str, Any]],
         if axis not in summary:
             failures.append(
                 f"{axis} not produced by judges; available metric keys: "
-                f"{sorted(k for k in metrics if 'llm_judged' in k or 'retrieval' in k)[:6]}..."
+                f"{sorted(metrics)[:12]}..."
             )
             continue
         actual = summary[axis]
@@ -259,7 +270,16 @@ def main() -> int:
         # Surface the judge-aggregate metrics that mapped to CLEARS axes plus
         # any unmapped llm_judged keys for debuggability.
         all_metrics = result.metrics or {}
-        debug_metrics = {k: v for k, v in all_metrics.items() if "llm_judged" in k or "retrieval" in k}
+        debug_metrics = {
+            k: v
+            for k, v in all_metrics.items()
+            if (
+                "llm_judged" in k
+                or "retrieval" in k
+                or k.split("/", 1)[0]
+                in {"correctness", "guideline_adherence", "global_guideline_adherence", "groundedness", "context_sufficiency", "safety"}
+            )
+        }
         print(json.dumps({
             "summary": summary,
             "judge_metrics": debug_metrics,

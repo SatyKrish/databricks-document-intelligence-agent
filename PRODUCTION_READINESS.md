@@ -16,7 +16,7 @@ This project is open-sourced as a Databricks reference implementation. Treat it 
 - `./scripts/bootstrap-demo.sh` succeeds in a clean demo workspace.
 - Synthetic PDFs in `samples/` produce at least ACME/BETA/GAMMA KPI rows.
 - Vector Search index sync completes and the Agent Bricks Supervisor endpoint answers a smoke question with citations.
-- `python evals/clears_eval.py --endpoint analyst-agent-demo --dataset evals/dataset.jsonl` passes.
+- `python evals/clears_eval.py --endpoint "$(./scripts/resolve-agent-endpoint.sh demo)" --dataset evals/dataset.jsonl` passes.
 - App starts via `databricks bundle run -t demo analyst_app`.
 
 ## Pilot-Ready Checklist

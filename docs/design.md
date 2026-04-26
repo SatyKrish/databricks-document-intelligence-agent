@@ -289,15 +289,15 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-demo.sh`. Reso
    └── consumers/         ← need foundation to be RUNNING and producing data
        ├── kpi_drift.yml         (needs gold_filing_kpis table)
        ├── index_refresh.job.yml (needs source table)
-       ├── analyst.app.yml       (needs Lakebase + agent endpoint)
+       ├── analyst.app.yml       (needs Lakebase + generated agent endpoint)
        ├── usage.dashboard.yml
        └── lakebase_catalog.yml  (needs instance AVAILABLE)
 ```
 
-**The bootstrap script auto-detects which mode to run** by checking whether the Agent Bricks Supervisor endpoint exists:
+**The bootstrap script auto-detects which mode to run** by checking whether the Agent Bricks Supervisor exists and has generated a serving endpoint:
 
 ```
-                       does analyst-agent-${target} exist?
+                 does doc-intel-supervisor-${target} have endpoint_name?
                                      │
                           no ◀───────┴───────▶ yes
                           │                     │

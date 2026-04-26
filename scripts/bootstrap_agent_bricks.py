@@ -320,7 +320,7 @@ def _endpoint_status(endpoint: object) -> tuple[str, str]:
     return _enum_name(ready), _enum_name(config_update)
 
 
-def _wait_endpoint_ready(w: WorkspaceClient, endpoint_name: str, *, timeout_seconds: int = 600) -> None:
+def _wait_endpoint_ready(w: WorkspaceClient, endpoint_name: str, *, timeout_seconds: int = 600) -> object:
     started = time.time()
     deadline = started + timeout_seconds
     next_log = 60
@@ -334,7 +334,7 @@ def _wait_endpoint_ready(w: WorkspaceClient, endpoint_name: str, *, timeout_seco
             if config_update == "UPDATE_FAILED":
                 raise RuntimeError(f"Agent Bricks endpoint {endpoint_name} update failed ({last_status})")
             if ready == "READY" and config_update in {"", "NOT_UPDATING"}:
-                return
+                return endpoint
         except RuntimeError:
             raise
         except Exception as exc:
@@ -353,11 +353,12 @@ def _wait_endpoint_ready(w: WorkspaceClient, endpoint_name: str, *, timeout_seco
 
 
 def _grant_endpoint_query(w: WorkspaceClient, endpoint_name: str, group_name: str) -> None:
-    _wait_endpoint_ready(w, endpoint_name)
+    endpoint = _wait_endpoint_ready(w, endpoint_name)
+    endpoint_id = getattr(endpoint, "id", None) or endpoint_name
 
     w.permissions.update(
         "serving-endpoints",
-        endpoint_name,
+        endpoint_id,
         access_control_list=[
             AccessControlRequest(
                 group_name=group_name,
@@ -374,16 +375,18 @@ def main() -> int:
     parser.add_argument("--schema", default=os.environ.get("DOCINTEL_SCHEMA"))
     parser.add_argument("--warehouse-id", default=os.environ.get("DOCINTEL_WAREHOUSE_ID"))
     parser.add_argument("--analyst-group", default=os.environ.get("DOCINTEL_ANALYST_GROUP", "account users"))
-    parser.add_argument("--supervisor-endpoint")
-    parser.add_argument("--knowledge-endpoint")
+    parser.add_argument("--requested-supervisor-endpoint")
+    parser.add_argument("--requested-knowledge-endpoint")
+    parser.add_argument("--supervisor-endpoint", dest="requested_supervisor_endpoint", help=argparse.SUPPRESS)
+    parser.add_argument("--knowledge-endpoint", dest="requested_knowledge_endpoint", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if not args.catalog or not args.schema or not args.warehouse_id:
         parser.error("--catalog, --schema, and --warehouse-id are required")
 
     target = args.target
-    supervisor_endpoint = args.supervisor_endpoint or f"analyst-agent-{target}"
-    knowledge_endpoint = args.knowledge_endpoint or f"doc-intel-knowledge-{target}"
+    requested_supervisor_endpoint = args.requested_supervisor_endpoint or f"analyst-agent-{target}"
+    requested_knowledge_endpoint = args.requested_knowledge_endpoint or f"doc-intel-knowledge-{target}"
     index_name = f"{args.catalog}.{args.schema}.filings_summary_idx"
 
     w = WorkspaceClient()
@@ -396,27 +399,30 @@ def main() -> int:
     knowledge_assistant = _ensure_knowledge_assistant(
         w,
         display_name=f"doc-intel-knowledge-{target}",
-        endpoint_name=knowledge_endpoint,
+        endpoint_name=requested_knowledge_endpoint,
         index_name=index_name,
     )
     supervisor = _ensure_supervisor(
         w,
         display_name=f"doc-intel-supervisor-{target}",
-        endpoint_name=supervisor_endpoint,
+        endpoint_name=requested_supervisor_endpoint,
         knowledge_assistant=knowledge_assistant,
         kpi_function_name=kpi_function_name,
     )
 
-    _grant_endpoint_query(w, supervisor_endpoint, args.analyst_group)
-    if knowledge_assistant.endpoint_name:
-        _grant_endpoint_query(w, knowledge_assistant.endpoint_name, args.analyst_group)
+    actual_supervisor_endpoint = supervisor.endpoint_name or requested_supervisor_endpoint
+    actual_knowledge_endpoint = knowledge_assistant.endpoint_name or requested_knowledge_endpoint
+
+    _grant_endpoint_query(w, actual_supervisor_endpoint, args.analyst_group)
+    if actual_knowledge_endpoint:
+        _grant_endpoint_query(w, actual_knowledge_endpoint, args.analyst_group)
 
     print(json.dumps({
         "knowledge_assistant": _as_dict(knowledge_assistant),
         "supervisor_agent": _as_dict(supervisor),
         "kpi_function": kpi_function_name,
-        "supervisor_endpoint": supervisor_endpoint,
-        "knowledge_endpoint": knowledge_assistant.endpoint_name or knowledge_endpoint,
+        "supervisor_endpoint": actual_supervisor_endpoint,
+        "knowledge_endpoint": actual_knowledge_endpoint,
     }, indent=2, default=str))
     return 0
 

@@ -29,7 +29,7 @@ This is a DAB plus Agent Bricks bootstrap project. SQL pipeline code is at `pipe
 - [x] T002 Create the bundle skeleton at `databricks.yml` with `bundle.name: doc-intel-10k`, `targets: {demo, prod}`, variables `catalog`, `schema`, `service_principal_id` (prod only), `embedding_model_endpoint_name`, and `quality_threshold` (default 22)
 - [x] T003 [P] Add `.github/workflows/deploy.yml` running `databricks bundle validate -t demo` on PR and `databricks bundle deploy -t demo` + `python evals/clears_eval.py` on push to `main`
 - [x] T004 [P] Create empty `pipelines/sql/`, `agent/`, `app/`, `evals/`, `resources/{pipelines,jobs,vector_search,serving,lakebase,monitors,dashboards,apps}/` directories with `.gitkeep` files
-- [x] T005 [P] Add `agent/requirements.txt` (`databricks-vectorsearch`, `databricks-sdk`) and `app/requirements.txt` (`streamlit`, `databricks-sdk`, `psycopg[binary]`)
+- [x] T005 [P] Add `agent/requirements.txt` (`databricks-sdk`) and `app/requirements.txt` (`streamlit`, `databricks-sdk`, `psycopg[binary]`)
 
 ---
 

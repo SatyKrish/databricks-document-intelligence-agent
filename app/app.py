@@ -14,11 +14,12 @@ import streamlit as st
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.config import Config
 
+from app.agent_bricks_client import invoke_agent_endpoint
 from app.agent_bricks_response import normalise_agent_response
 from app import lakebase_client
 
 
-AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set via resource binding in resources/consumers/analyst.app.yml
+AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set by resources/consumers/analyst.app.yml
 
 
 @st.cache_resource(ttl=3600)
@@ -57,11 +58,7 @@ def _user_email() -> str:
 
 def _query_agent(question: str, conversation_id: str) -> dict:
     try:
-        out = _agent_client().serving_endpoints.query(
-            name=AGENT_ENDPOINT,
-            input=[{"role": "user", "content": question}],
-        )
-        payload = out.as_dict() if hasattr(out, "as_dict") else dict(out)
+        payload = invoke_agent_endpoint(_agent_client(), AGENT_ENDPOINT, question, client_request_id=conversation_id)
         return normalise_agent_response(payload, conversation_id=conversation_id)
     except Exception as exc:
         return {

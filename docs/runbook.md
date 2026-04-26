@@ -48,7 +48,7 @@ This creates or updates the Knowledge Assistant, syncs the Vector Search knowled
 
 ## Inspect CLEARS metrics in MLflow
 
-CI runs `python evals/clears_eval.py --endpoint analyst-agent-demo` after each `demo` deploy. Look for the experiment `/Shared/docintel-clears-<user>`; each run logs:
+CI resolves the generated Agent Bricks Supervisor serving endpoint, then runs `python evals/clears_eval.py --endpoint "$AGENT_ENDPOINT_NAME"` after each `demo` deploy. Look for the experiment `/Shared/docintel-clears-<user>`; each run logs:
 
 - Per-axis metrics: `correctness`, `adherence`, `relevance`, `execution`, `safety`, `latency_p95_ms`
 - Per-category slices: `p2_correctness`, `p3_correctness`
@@ -122,9 +122,11 @@ The bundle has three chicken-egg dependencies that a single `bundle deploy` cann
 resolve on a fresh workspace. Each needs a phase-2 step after a prior side effect:
 
 1. **Databricks App binds to an Agent Bricks endpoint**
-   - `resources/consumers/analyst.app.yml` binds to `analyst-agent-${target}`.
-   - The endpoint is created by `scripts/bootstrap_agent_bricks.py` after the
-     Vector Search index exists.
+   - Agent Bricks generates concrete Knowledge Assistant and Supervisor serving
+     endpoint names.
+   - `scripts/bootstrap_agent_bricks.py` returns the generated Supervisor
+     endpoint, and `resources/consumers/analyst.app.yml` injects it into
+     `DOCINTEL_AGENT_ENDPOINT` via the `agent_endpoint_name` bundle variable.
    - **Fix**: bootstrap creates data and Agent Bricks resources before the full
      consumer deploy.
 

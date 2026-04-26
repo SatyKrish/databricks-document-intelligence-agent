@@ -69,7 +69,7 @@ resources/
 │   ├── kpi_drift.yml                           # Lakehouse Monitoring
 │   ├── usage.dashboard.yml                     # AI/BI Lakeview dashboard
 │   ├── lakebase_catalog.yml                    # Lakebase database catalog
-│   └── analyst.app.yml                         # Databricks App binding to Agent Bricks endpoint
+│   └── analyst.app.yml                         # Databricks App env binding to generated Agent Bricks endpoint
 
 pipelines/
 └── sql/

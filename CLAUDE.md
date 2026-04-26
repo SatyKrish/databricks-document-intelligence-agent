@@ -50,9 +50,9 @@ docs/runbook.md       Day-2 ops + bring-up workflow
 
 - Validate: `databricks bundle validate -t demo`
 - Fresh stand-up: `./scripts/bootstrap-demo.sh` (requires `DOCINTEL_CATALOG`, `DOCINTEL_SCHEMA`, `DOCINTEL_WAREHOUSE_ID`)
-- Steady-state deploy: `databricks bundle deploy -t demo`
+- Steady-state deploy: `databricks bundle deploy -t demo --var "agent_endpoint_name=$(./scripts/resolve-agent-endpoint.sh demo)"`
 - Run pipeline: `databricks bundle run -t demo doc_intel_pipeline`
-- Run eval: `python evals/clears_eval.py --endpoint analyst-agent-demo --dataset evals/dataset.jsonl`
+- Run eval: `python evals/clears_eval.py --endpoint "$(./scripts/resolve-agent-endpoint.sh demo)" --dataset evals/dataset.jsonl`
 
 ## Tests & validation
 

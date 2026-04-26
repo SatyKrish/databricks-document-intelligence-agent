@@ -174,7 +174,7 @@ The script handles the chicken-egg ordering automatically — see [`docs/design.
 ```bash
 DOCINTEL_CATALOG=workspace DOCINTEL_SCHEMA=docintel_10k_demo \
 .venv/bin/python evals/clears_eval.py \
-  --endpoint analyst-agent-demo \
+  --endpoint "$(./scripts/resolve-agent-endpoint.sh demo)" \
   --dataset evals/dataset.jsonl
 ```
 

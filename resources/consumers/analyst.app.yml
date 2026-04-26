@@ -5,19 +5,21 @@ resources:
       description: "10-K Analyst — chat over indexed filings with citations"
       source_code_path: ../../app
 
-      # Databricks Apps auto-grants the declared permissions to the App SP
-      # on deploy — see https://docs.databricks.com/aws/en/dev-tools/databricks-apps/access-data
-      # Do NOT also grant manually.
+      config:
+        env:
+          - name: DOCINTEL_AGENT_ENDPOINT
+            value: ${var.agent_endpoint_name}
+
+      # Databricks Apps auto-grants Lakebase permissions to the App SP on
+      # deploy — see https://docs.databricks.com/aws/en/dev-tools/databricks-apps/access-data.
+      # Agent Bricks endpoint access is granted to the analyst group by
+      # scripts/bootstrap_agent_bricks.py because calls use OBO user identity.
       resources:
         - name: docintel-lakebase
           database:
             database_name: ${var.lakebase_instance}
             instance_name: ${var.lakebase_instance}
             permission: CAN_CONNECT_AND_CREATE
-        - name: agent-endpoint
-          serving_endpoint:
-            name: analyst-agent-${bundle.target}
-            permission: CAN_QUERY
 
       # Mandatory OBO scopes (Databricks Apps IAM/auth docs:
       # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/iam-auth)

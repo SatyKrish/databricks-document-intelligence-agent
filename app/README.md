@@ -36,7 +36,7 @@ eval "$(databricks apps get doc-intel-analyst-demo \
   --output json | jq -r '.resources[] | select(.name=="docintel-lakebase") | .database | @sh "
 export PGHOST=\(.host) PGPORT=\(.port) PGUSER=\(.username) PGPASSWORD=\(.password) PGDATABASE=\(.database)"')"
 
-export DOCINTEL_AGENT_ENDPOINT=analyst-agent-demo
+export DOCINTEL_AGENT_ENDPOINT="$(./scripts/resolve-agent-endpoint.sh demo)"
 streamlit run app/app.py
 ```
 

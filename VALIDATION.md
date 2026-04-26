@@ -66,7 +66,7 @@ Expected:
 
 ```bash
 python evals/clears_eval.py \
-  --endpoint analyst-agent-demo \
+  --endpoint "$(./scripts/resolve-agent-endpoint.sh demo)" \
   --dataset evals/dataset.jsonl
 ```
 

@@ -3,11 +3,41 @@
 from __future__ import annotations
 
 import uuid
+import re
 from collections.abc import Mapping
 from typing import Any
 
 
+# Observed during 2026-04-26 demo deploy validation: Knowledge Assistant
+# citations appear as markdown footnotes in intermediate Agent Bricks messages,
+# e.g. `[^p1]: ... _ACME_10K_2024.pdf_`. This is not a public structured
+# citation contract. If citation chips stop showing filenames, grep live payloads
+# for `[^` and `.pdf_`; extraction falls back to filename="source" for footnotes
+# without a parseable filename and [] when no footnotes are present.
 APP_EMPTY_TEXT = "The Agent Bricks endpoint returned a response without displayable text."
+FILENAME_RE = re.compile(r"_([A-Za-z0-9][A-Za-z0-9_.-]*\.pdf)_")
+
+
+def _output_text_groups(payload: Mapping[str, Any]) -> list[str]:
+    output = payload.get("output")
+    if not isinstance(output, list):
+        return []
+
+    groups: list[str] = []
+    for item in output:
+        if not isinstance(item, Mapping):
+            continue
+        content_items = item.get("content", [])
+        if not isinstance(content_items, list):
+            continue
+        parts: list[str] = []
+        for content in content_items:
+            text = content.get("text") if isinstance(content, Mapping) else None
+            if isinstance(text, str):
+                parts.append(text)
+        if parts:
+            groups.append("\n".join(parts))
+    return groups
 
 
 def extract_text(payload: Mapping[str, Any], *, empty_text: str = "") -> str:
@@ -24,23 +54,11 @@ def extract_text(payload: Mapping[str, Any], *, empty_text: str = "") -> str:
         if isinstance(content, str):
             return content
 
-    output = payload.get("output")
-    if isinstance(output, str):
-        return output
-    if isinstance(output, list):
-        parts: list[str] = []
-        for item in output:
-            if not isinstance(item, Mapping):
-                continue
-            content_items = item.get("content", [])
-            if not isinstance(content_items, list):
-                continue
-            for content in content_items:
-                text = content.get("text") if isinstance(content, Mapping) else None
-                if isinstance(text, str):
-                    parts.append(text)
-        if parts:
-            return "\n".join(parts)
+    if isinstance(payload.get("output"), str):
+        return payload["output"]
+    output_groups = _output_text_groups(payload)
+    if output_groups:
+        return output_groups[-1]
 
     return empty_text
 
@@ -55,6 +73,26 @@ def extract_citations(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             normalized.append(dict(citation))
         elif citation is not None:
             normalized.append({"source": str(citation)})
+    if normalized:
+        return normalized
+
+    # Walk all output groups, not just the final answer. The Supervisor's final
+    # message can omit citations that the Knowledge Assistant returned earlier.
+    for text in _output_text_groups(payload):
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("[^") or "]:" not in stripped:
+                continue
+            snippet = stripped.split("]:", 1)[1].strip()
+            filename = ""
+            match = FILENAME_RE.search(snippet)
+            if match:
+                filename = match.group(1)
+            normalized.append({
+                "filename": filename or "source",
+                "section_label": "Knowledge Assistant citation",
+                "snippet": snippet,
+            })
     return normalized
 
 

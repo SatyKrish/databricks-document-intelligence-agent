@@ -47,20 +47,25 @@ jobs:
       - name: Install Python deps
         run: pip install -r agent/requirements.txt -r evals/requirements.txt
 
-      - name: Verify steady-state Agent Bricks endpoint exists
+      - name: Resolve steady-state Agent Bricks endpoint
         run: |
-          endpoint="analyst-agent-demo"
-          if ! databricks api get "/api/2.0/serving-endpoints/${endpoint}" >/dev/null 2>&1; then
-            echo "::error::Agent Bricks supervisor endpoint ${endpoint} is missing. Run ./scripts/bootstrap-demo.sh once for first workspace bring-up, then rerun CI."
+          endpoint="$(./scripts/resolve-agent-endpoint.sh demo 2>/dev/null || true)"
+          if [ -z "$endpoint" ]; then
+            echo "::error::Agent Bricks supervisor for demo is missing. Run ./scripts/bootstrap-demo.sh once for first workspace bring-up, then rerun CI."
             exit 1
           fi
+          if ! databricks api get "/api/2.0/serving-endpoints/${endpoint}" >/dev/null 2>&1; then
+            echo "::error::Agent Bricks supervisor record points to endpoint ${endpoint}, but that serving endpoint is missing or not listable. Run ./scripts/bootstrap-demo.sh locally to repair workspace drift."
+            exit 1
+          fi
+          echo "AGENT_ENDPOINT_NAME=${endpoint}" >> "$GITHUB_ENV"
 
       - name: Deploy bundle (full — consumers already exist in steady-state)
         # Pin warehouse_id so the dashboard and Agent Bricks bootstrap match
         # wait_for_kpis. Without --var, the bundle
         # falls back to its `lookup: warehouse: Serverless Starter Warehouse`
         # default and silently picks a different ID.
-        run: databricks bundle deploy -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID"
+        run: databricks bundle deploy -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" --var "agent_endpoint_name=$AGENT_ENDPOINT_NAME"
 
       - name: Wait for Lakebase instance to be AVAILABLE
         # Lakebase already exists in steady-state but a config change can
@@ -98,7 +103,7 @@ while True:
           done
           databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" doc_intel_pipeline
           python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
-          databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" index_refresh
+          databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" --var "agent_endpoint_name=$AGENT_ENDPOINT_NAME" index_refresh
           python scripts/bootstrap_agent_bricks.py \
             --target demo \
             --catalog "$DOCINTEL_CATALOG" \
@@ -123,7 +128,7 @@ while True:
         # Databricks Apps deploy docs:
         # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy
         # `bundle deploy` alone uploads code but doesn't apply config/restart.
-        run: databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" analyst_app
+        run: databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" --var "agent_endpoint_name=$AGENT_ENDPOINT_NAME" analyst_app
 
       - name: Verify OBO scopes survived deploy
         # `bundle run` may wipe user_api_scopes (documented destructive-update
@@ -140,4 +145,4 @@ assert not missing, f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)
 "
 
       - name: CLEARS evaluation gate
-        run: python evals/clears_eval.py --endpoint analyst-agent-demo --dataset evals/dataset.jsonl
+        run: python evals/clears_eval.py --endpoint "$AGENT_ENDPOINT_NAME" --dataset evals/dataset.jsonl
