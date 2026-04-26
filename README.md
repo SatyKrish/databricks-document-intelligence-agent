@@ -149,7 +149,7 @@ databricks auth profiles   # verify the DEFAULT profile is configured
 git clone https://github.com/<your-fork>/databricks-document-intelligence-agent.git
 cd databricks-document-intelligence-agent
 python -m venv .venv
-.venv/bin/pip install -r agent/requirements.txt -r evals/requirements.txt
+.venv/bin/pip install -r agent/requirements.txt -r evals/requirements.txt pytest
 ```
 
 ### 2. Discover your workspace IDs
@@ -213,8 +213,10 @@ databricks bundle run -t dev analyst_app                      # apply app config
 
 # Agent code changes (agent/*.py): register a new model version
 # and repoint the existing serving endpoint in-place.
-DOCINTEL_CATALOG=workspace DOCINTEL_SCHEMA=docintel_10k_dev \
-  python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
+DOCINTEL_CATALOG=workspace \
+DOCINTEL_SCHEMA=docintel_10k_dev \
+DOCINTEL_WAREHOUSE_ID=<from-step-2> \
+  .venv/bin/python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
 
 # Pipeline SQL changes that need to re-process existing filings
 databricks bundle run -t dev doc_intel_pipeline
@@ -596,7 +598,7 @@ Override via `--var name=value` on any `bundle` command.
 |---|---|---|
 | `DOCINTEL_CATALOG` | yes | Bootstrap, CI, eval |
 | `DOCINTEL_SCHEMA` | yes | Same |
-| `DOCINTEL_WAREHOUSE_ID` | yes | Bootstrap kpi-poll, eval slicer |
+| `DOCINTEL_WAREHOUSE_ID` | yes | Bootstrap (passed to bundle as `--var warehouse_id`, used by kpi-poll + smoke); `agent/log_and_register.py` (auth-policy SQL warehouse resource); `agent/tools.py` UC Function tool |
 | `DOCINTEL_TARGET` | no (default `dev`) | Bootstrap |
 | `DOCINTEL_ANALYST_GROUP` | no (default `account users`) | UC grants in bootstrap + CI |
 | `DOCINTEL_WAIT_SECONDS` | no (default 600) | Bootstrap KPI-table poll timeout |

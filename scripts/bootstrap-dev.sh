@@ -66,6 +66,13 @@ if [[ "${DOCINTEL_FORCE_LOCK:-0}" == "1" ]]; then
   DEPLOY_FLAGS+=(--force-lock)
 fi
 
+# Pin the bundle's `warehouse_id` variable to the user-selected ID so the
+# dashboard + serving-endpoint env match wait_for_kpis / log_and_register.
+# Without this, the bundle falls back to its `lookup: warehouse: Serverless
+# Starter Warehouse` default — which fails validation in workspaces lacking
+# that named warehouse, and silently picks a different ID otherwise.
+VAR_FLAGS=(--var "warehouse_id=$DOCINTEL_WAREHOUSE_ID")
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
@@ -209,7 +216,7 @@ if [[ "$MODE" == "first" ]]; then
     mv "$f" "$f.skip"
   done
 
-  databricks bundle deploy -t "$TARGET" "${DEPLOY_FLAGS[@]}" || \
+  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" "${DEPLOY_FLAGS[@]}" || \
     die "stage-1 deploy failed (foundation should be self-contained — investigate)"
 
   restore_consumers
@@ -217,7 +224,7 @@ if [[ "$MODE" == "first" ]]; then
 
   log "step 2/6: producing data"
   upload_samples
-  databricks bundle run -t "$TARGET" "$PIPELINE_KEY" || \
+  databricks bundle run -t "$TARGET" "${VAR_FLAGS[@]}" "$PIPELINE_KEY" || \
     die "pipeline run failed — inspect SDP UI before retrying"
   "$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
     die "timed out waiting for $KPI_TABLE"
@@ -226,18 +233,27 @@ if [[ "$MODE" == "first" ]]; then
   wait_for_lakebase_available
 
   log "step 3/6: stage-2 deploy (full bundle — consumers join the foundation)"
-  databricks bundle deploy -t "$TARGET" "${DEPLOY_FLAGS[@]}" || \
+  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" "${DEPLOY_FLAGS[@]}" || \
     die "stage-2 deploy failed; check logs"
+
+  # The index_refresh job is created by stage-2 deploy and is `table_update`-
+  # triggered. Triggers do not fire retroactively on the rows the pipeline
+  # produced in stage 2, so we have to materialize the Vector Search index
+  # explicitly the first time. sync_index.py is create-if-missing/sync-if-
+  # exists, so this is idempotent on subsequent runs.
+  log "step 3.5/6: triggering initial Vector Search index materialization"
+  databricks bundle run -t "$TARGET" "${VAR_FLAGS[@]}" index_refresh || \
+    log "  warn: index_refresh failed; the table_update trigger will retry on the next pipeline run"
 
 else
   # ─── Steady-state path: single full deploy + in-place data refresh ────────
   log "step 1/6: full bundle deploy (steady-state — consumers already exist)"
-  databricks bundle deploy -t "$TARGET" "${DEPLOY_FLAGS[@]}" || \
+  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" "${DEPLOY_FLAGS[@]}" || \
     die "bundle deploy failed; if a prior deploy was interrupted, set DOCINTEL_FORCE_LOCK=1 and retry"
 
   log "step 2/6: refreshing data + repointing serving endpoint"
   upload_samples
-  databricks bundle run -t "$TARGET" "$PIPELINE_KEY" || \
+  databricks bundle run -t "$TARGET" "${VAR_FLAGS[@]}" "$PIPELINE_KEY" || \
     die "pipeline run failed — inspect SDP UI before retrying"
   "$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
     die "timed out waiting for $KPI_TABLE"
@@ -250,7 +266,7 @@ fi
 
 # ─── Step 4: app run (both paths) ────────────────────────────────────────────
 log "step 4/6: applying app config + restart"
-databricks bundle run -t "$TARGET" analyst_app || \
+databricks bundle run -t "$TARGET" "${VAR_FLAGS[@]}" analyst_app || \
   log "  warn: analyst_app run failed; retry manually with 'databricks bundle run -t $TARGET analyst_app'"
 
 # ─── Step 5: UC grants (idempotent) ──────────────────────────────────────────

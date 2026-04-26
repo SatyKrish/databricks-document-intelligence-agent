@@ -17,7 +17,8 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-        run: databricks bundle validate --strict -t dev
+          DOCINTEL_WAREHOUSE_ID: ${{ vars.DOCINTEL_WAREHOUSE_ID }}
+        run: databricks bundle validate --strict -t dev --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID"
 
   deploy-dev:
     # CI assumes steady-state: the first-ever bring-up of a workspace must be
@@ -47,7 +48,11 @@ jobs:
         run: pip install -r agent/requirements.txt -r evals/requirements.txt
 
       - name: Deploy bundle (full — consumers already exist in steady-state)
-        run: databricks bundle deploy -t dev
+        # Pin warehouse_id so the dashboard + serving env match what
+        # wait_for_kpis / log_and_register use. Without --var, the bundle
+        # falls back to its `lookup: warehouse: Serverless Starter Warehouse`
+        # default and silently picks a different ID.
+        run: databricks bundle deploy -t dev --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID"
 
       - name: Wait for Lakebase instance to be AVAILABLE
         # Lakebase already exists in steady-state but a config change can
@@ -83,7 +88,7 @@ while True:
               "dbfs:/Volumes/${DOCINTEL_CATALOG}/${DOCINTEL_SCHEMA}/raw_filings/" \
               --overwrite
           done
-          databricks bundle run -t dev doc_intel_pipeline
+          databricks bundle run -t dev --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" doc_intel_pipeline
           python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
           # --serving-endpoint repoints the existing endpoint to the new
           # model version in-place (steady-state idempotent operation).
@@ -107,7 +112,7 @@ while True:
         # Databricks Apps deploy docs:
         # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy
         # `bundle deploy` alone uploads code but doesn't apply config/restart.
-        run: databricks bundle run -t dev analyst_app
+        run: databricks bundle run -t dev --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" analyst_app
 
       - name: Verify OBO scopes survived deploy
         # `bundle run` may wipe user_api_scopes (documented destructive-update
