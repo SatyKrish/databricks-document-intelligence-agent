@@ -1,6 +1,6 @@
 # Quickstart: Deploy and Test the 10-K Analyst
 
-Goal: from a clean clone, stand up the entire stack on the Databricks `dev` target and verify P1, P2, P3 acceptance scenarios in under 30 minutes.
+Goal: from a clean clone, stand up the entire stack on the Databricks `dev` target and verify P1, P2, P3 acceptance scenarios in 15–25 minutes.
 
 ## Prerequisites
 

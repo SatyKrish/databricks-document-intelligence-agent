@@ -55,7 +55,7 @@ tunable as a bundle parameter.
 **Rationale**: Reffy reports keyword-only sub-2s but reasoning needs LLM
 generation. Hybrid keyword + semantic retrieval to top-25, then a Mosaic AI
 re-ranker (CPU) trim to top-5, keeps single-filing P95 ≤ 8s achievable
-on CPU serving while improving relevance materially. Bigger windows blow
+on CPU serving while improving top-5 ordering qualitatively. Bigger windows blow
 the latency budget; pure semantic misses exact ticker/year matches in
 financial filings.
 

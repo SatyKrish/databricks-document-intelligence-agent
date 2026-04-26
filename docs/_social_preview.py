@@ -26,17 +26,30 @@ DIM = "#9AA5B8"          # medium gray-blue
 ACCENT = "#FF3621"       # Databricks orange
 LINE = "#252D3F"         # subtle separator
 
-# Arial bundles ship on macOS, support a wide glyph set including arrows,
-# and have explicit Regular/Bold/Black files (no .ttc index guessing).
-FONT_REG = "/System/Library/Fonts/Supplemental/Arial.ttf"
-FONT_BOLD = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
-FONT_BLACK = "/System/Library/Fonts/Supplemental/Arial Black.ttf"
+# Prefer macOS Arial for local generation, but fall back to Liberation Sans in
+# Linux devcontainers.
+FONT_CANDIDATES = {
+    "regular": [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ],
+    "bold": [
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    ],
+    "black": [
+        "/System/Library/Fonts/Supplemental/Arial Black.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    ],
+}
 
 OUT = Path(__file__).parent / "social-preview.png"
 
 
 def font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
-    path = {"regular": FONT_REG, "bold": FONT_BOLD, "black": FONT_BLACK}[weight]
+    path = next((p for p in FONT_CANDIDATES[weight] if Path(p).exists()), None)
+    if path is None:
+        raise FileNotFoundError(f"No usable font found for weight={weight!r}")
     return ImageFont.truetype(path, size)
 
 
@@ -70,7 +83,7 @@ def main() -> None:
     # One-line architecture summary, near bottom. ASCII arrows guarantee
     # glyph coverage across any future font swap.
     arch_f = font(22, "bold")
-    arch_text = "ai_parse_document  ->  typed KPIs  ->  Vector Search  ->  cited agent on Mosaic AI"
+    arch_text = "ai_parse_document  ->  typed KPIs  ->  Vector Search  ->  eval-gated cited agent"
     d.text((margin, H - margin - 80), arch_text, font=arch_f, fill=FG)
 
     # Separator + footer.
