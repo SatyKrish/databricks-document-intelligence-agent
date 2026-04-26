@@ -1,7 +1,9 @@
-"""UC Function tools the Analyst Agent can call for deterministic SQL aggregation.
+"""Deterministic KPI tool glue for Agent Bricks.
 
-Wraps gold_filing_kpis so cross-company comparisons (US3) don't have to go through
-retrieval + LLM math.
+The production tool is a Unity Catalog SQL function created by
+`scripts/bootstrap_agent_bricks.py`. These helpers keep the SQL access pattern
+testable and available for local validation without reintroducing a custom
+agent runtime.
 """
 
 from __future__ import annotations
@@ -11,17 +13,25 @@ from typing import Any
 
 from databricks.sdk import WorkspaceClient
 
-from agent._obo import user_workspace
-
 
 CATALOG = os.environ["DOCINTEL_CATALOG"]
 SCHEMA = os.environ["DOCINTEL_SCHEMA"]
 WAREHOUSE_ID = os.environ["DOCINTEL_WAREHOUSE_ID"]
 
 
+def _workspace() -> WorkspaceClient:
+    """Return the current Databricks client.
+
+    Hosted production calls are expected to run under Agent Bricks / AI Gateway
+    identity enforcement. Missing user identity is a deployment error, not a
+    alternate execution mode handled here.
+    """
+    return WorkspaceClient()
+
+
 def fetch_kpis(filename: str) -> dict[str, Any] | None:
     """Return the gold_filing_kpis row for one filing, or None if not present."""
-    w = user_workspace()
+    w = _workspace()
     statement = w.statement_execution.execute_statement(
         warehouse_id=WAREHOUSE_ID,
         statement=(
@@ -44,7 +54,7 @@ def fetch_kpis_for_companies(companies: list[str]) -> list[dict[str, Any]]:
     """
     if not companies:
         return []
-    w = user_workspace()
+    w = _workspace()
     clauses = []
     parameters: list[dict[str, str]] = []
     for i, c in enumerate(companies):

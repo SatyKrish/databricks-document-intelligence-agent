@@ -21,9 +21,11 @@ This document covers the *why*, the architecture, and the build workflow behind 
 
 ## Why this exists
 
-Databricks shipped a lot of new generative-AI surface area in 2025–2026: `ai_parse_document`, Mosaic AI Vector Search, the Agent Framework, AI Gateway, Lakebase, Databricks Apps. Tutorials show each piece in isolation; nobody shows them wired together with **eval gates, governance, and reproducible deploys** the way you'd actually ship to analysts.
+Databricks shipped a lot of new generative-AI surface area in 2025–2026: Document Intelligence (`ai_parse_document`, `ai_classify`, `ai_extract`), Agent Bricks, AI Gateway, Lakebase, and Databricks Apps. The two source articles for this reference are Databricks' Document Intelligence launch article ("Why Your Agents Can't Read Enterprise Documents") and the Agent Bricks platform article. The reference exists to demonstrate those patterns end to end: parse messy enterprise PDFs into a governed document data layer, then build a governed agent on that enriched layer through Agent Bricks.
 
-This repo is that worked example. Drop a PDF into a governed UC volume; ten minutes later, an analyst can ask cited questions in plain English with end-to-end audit. The whole stack is described declaratively as one **Databricks Asset Bundle (DAB)** plus a small bootstrap script. DAB manages catalog/schema/volume, pipeline, jobs, the Vector Search **endpoint**, the Lakebase instance, the serving endpoint, the monitor, the app, and the dashboard; the Vector Search **index** itself is created and synced by `jobs/index_refresh/sync_index.py` (DAB doesn't yet manage indexes as a resource type), and the agent model version is registered by `agent/log_and_register.py`. The bootstrap script orchestrates them in the right order.
+This repo is that worked example. Drop a PDF into a governed UC volume; ten minutes later, an analyst can ask cited questions in plain English with end-to-end audit. The desired target architecture is **Agent Bricks-first**: Document Intelligence prepares the governed source of truth; Knowledge Assistant handles cited document Q&A; Supervisor Agent coordinates document Q&A with structured KPI tools; AI Gateway, Unity Catalog, OBO, Lakebase, and CLEARS provide the governance and operating layer.
+
+The earlier custom `mlflow.pyfunc` agent path diverged from that target by re-introducing custom serving lifecycle, auth-policy ordering, retrieval, and supervisor code that Agent Bricks is meant to absorb. The production path now uses Agent Bricks bootstrap instead of that custom runtime.
 
 It also demonstrates a development workflow: **Spec-Kit** for spec-driven design, **Claude Code** with Databricks skill bundles for AI-assisted implementation, six **non-negotiable constitution principles** that gate every plan. See [How it's built](#how-its-built--three-pillars).
 
@@ -43,9 +45,9 @@ It also demonstrates a development workflow: **Spec-Kit** for spec-driven design
   BETA_10K.pdf       │  (raw bytes,    │   │ filings (parsed │   │ sections (one    │
   GAMMA_10K.pdf      │   filename,     │   │ VARIANT —       │   │  row per parsed  │
                      │   ingested_at)  │   │ ai_parse_       │   │  $.sections[*];  │
-                     │                 │   │ document)       │   │  fallback to     │
-                     │  >50MB rejects: │   │                 │   │  full_document   │
-                     │  bronze_filings │   │ Status: ok /    │   │  if absent)      │
+                     │                 │   │ document)       │   │  uses full_      │
+                     │  >50MB rejects: │   │                 │   │  document when   │
+                     │  bronze_filings │   │ Status: ok /    │   │  sections absent)│
                      │  _rejected      │   │ partial / error │   │                  │
                      └─────────────────┘   └─────────────────┘   │ gold_filing_kpis │
                           01_bronze.sql       02_silver_parse    │ (typed columns:  │
@@ -91,45 +93,40 @@ It also demonstrates a development workflow: **Spec-Kit** for spec-driven design
    "Quality before retrieval."
 ```
 
-**Ownership note**: DAB manages the Vector Search **endpoint** (`resources/foundation/filings_index.yml`) and the index-refresh **job** (`resources/consumers/index_refresh.job.yml`). The **index** itself isn't yet a DAB-managed resource type as of CLI 0.298 — `jobs/index_refresh/sync_index.py` creates the Delta-Sync index on first run and triggers a sync on subsequent runs. The endpoint lives in foundation so first-deploy bootstrap can materialize the index before `agent/log_and_register.py` logs the model auth policy that references it.
+**Ownership note**: DAB manages the Vector Search **endpoint** (`resources/foundation/filings_index.yml`) and the index-refresh **job** (`resources/consumers/index_refresh.job.yml`). The **index** itself isn't yet a DAB-managed resource type as of CLI 0.298 — `jobs/index_refresh/sync_index.py` creates the Delta-Sync index on first run and triggers a sync on subsequent runs. The endpoint lives in foundation so first-deploy bootstrap can materialize the index before `scripts/bootstrap_agent_bricks.py` attaches it to Knowledge Assistant.
 
-### Agent has two paths, one endpoint
+### Agent Bricks target runtime
 
 ```
    User question
         │
         ▼
-   ┌────────────────────────────────────────────┐
-   │  AnalystAgent.predict()                    │
-   │  ─────────────────────                      │
-   │   contains "compare" / "vs" /              │
-   │   "between" + ≥2 company names?            │
-   └────────────┬─────────────────┬─────────────┘
-                │ no              │ yes
-                ▼                 ▼
-   ┌──────────────────────┐  ┌──────────────────────┐
-   │ Single-filing path   │  │ Supervisor path      │
-   │                      │  │                      │
-   │ 1. Hybrid search     │  │ For each company:    │
-   │    (keyword + vec)   │  │   ▸ run analyst path │
-   │ 2. Re-rank → top 5   │  │   ▸ pull KPIs from   │
-   │ 3. LLM generates     │  │     gold_filing_kpis │
-   │    answer w/ [1] [2] │  │ Format markdown      │
-   │    citations         │  │ table with cites.    │
-   └──────────────────────┘  └──────────────────────┘
-                │                 │
-                └────────┬────────┘
-                         ▼
-              ┌──────────────────────┐
-              │  Response JSON:      │
-              │   answer             │
-              │   citations[]        │
-              │   grounded: bool     │
-              │   latency_ms         │
-              └──────────────────────┘
+   ┌─────────────────────────────────────────────┐
+   │ Agent Bricks Supervisor Agent               │
+   │ - owns routing and orchestration            │
+   │ - runs under UC / AI Gateway governance     │
+   └────────────┬─────────────────────┬──────────┘
+                │                     │
+                ▼                     ▼
+   ┌────────────────────────┐  ┌────────────────────────┐
+   │ Knowledge Assistant    │  │ Structured KPI tool    │
+   │ - cited document Q&A   │  │ - reads Gold KPI table │
+   │ - grounded in parsed   │  │ - deterministic tables │
+   │   document layer / VS  │  │   for comparisons      │
+   └────────────────────────┘  └────────────────────────┘
+                │                     │
+                └──────────┬──────────┘
+                           ▼
+               ┌──────────────────────┐
+               │ Response JSON / App  │
+               │ citations, feedback  │
+               │ latency, audit       │
+               └──────────────────────┘
 ```
 
-The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served behind an **AI Gateway** (rate limiting per-user, usage tracking, inference-table audit). Identity passthrough is implemented at the *App layer* when the workspace has Databricks Apps user-token passthrough enabled: the Streamlit app extracts the user's `x-forwarded-access-token` header and constructs a user-scoped `WorkspaceClient`. The served model is OBO-ready via MLflow `auth_policy` and Model Serving user credentials. If app-level passthrough is not enabled, the app falls back to service-principal auth and the repo must be treated as a reference/demo deployment, not a production row-level-security deployment. See [`../SECURITY.md`](../SECURITY.md) and [`../app/README.md`](../app/README.md).
+Knowledge Assistant is the default single-filing Q&A path because the Agent Bricks article positions the hard part as governed context, identity, and observability rather than hand-building the agent loop. Supervisor Agent is the default cross-company orchestration path. Custom code is allowed only where it is business logic around Agent Bricks, such as a deterministic KPI table tool or the App-specific feedback UI. It must not replace Knowledge Assistant, Supervisor Agent, Agent Bricks serving, or Agent Bricks governance.
+
+**Removed divergence**: the custom `agent/analyst_agent.py`, `agent/retrieval.py`, `agent/supervisor.py`, `agent/log_and_register.py`, and `resources/consumers/agent.serving.yml` path has been removed. `scripts/bootstrap_agent_bricks.py` is now the production bootstrap for Knowledge Assistant, the UC KPI function, and Supervisor Agent configuration.
 
 ### Runtime stack
 
@@ -149,26 +146,27 @@ The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served beh
                   │ query           │ feedback writes
                   ▼                 ▼
    ┌────────────────────────┐  ┌────────────────────────┐
-   │ Model Serving endpoint │  │  Lakebase Postgres     │
-   │ "analyst-agent-demo"    │  │  ─────────────────      │
-   │  (CPU, scales to 0)    │  │  conversation_history   │
+   │ Agent Bricks endpoint  │  │  Lakebase Postgres     │
+   │ Knowledge Assistant +  │  │  ─────────────────      │
+   │ Supervisor Agent       │  │  conversation_history   │
    │                        │  │  query_logs             │
    │  + AI Gateway:         │  │  feedback               │
-   │    rate limit          │  │                        │
-   │      (per-user key)    │  │  (Postgres for tiny    │
-   │    inference-table     │  │   per-turn writes —    │
-   │      audit             │  │   Delta isn't great    │
-   │    usage tracking      │  │   at row-by-row)       │
+   │    OBO, permissions,   │  │                        │
+   │    audit, rate limits, │  │  (Postgres for tiny    │
+   │    guardrails          │  │   per-turn writes —    │
+   │                        │  │   Delta isn't great    │
+   │                        │  │   at row-by-row)       │
    └────────────────────────┘  └────────────────────────┘
 
-   OBO (user identity end-to-end, when enabled):
+   OBO (user identity end-to-end, mandatory):
    ──────────────────────────────
-   App reads `x-forwarded-access-token` from the request, builds
-   `WorkspaceClient(token=...)`, calls the serving endpoint with the
-   user's identity. The agent-side MLflow auth policy and Model Serving
-   OBO credentials let downstream calls run as the user. If the app-side
-   feature is unavailable, the bootstrap script prints an explicit warning
-   and the deployment remains reference/demo only.
+   App reads `x-forwarded-access-token` from the request and invokes the
+   Agent Bricks endpoint with the user's identity. AI Gateway and Unity
+   Catalog enforce identity, permissions, audit, and routing across the
+   agent, model, tools, and data. User token passthrough is a hard
+   prerequisite for production. If the workspace cannot provide end-to-end
+   OBO, deployment must fail rather than silently falling back to a service
+   principal identity.
 ```
 
 **Why Postgres for state?** Delta tables are great for analytics but bad at "insert one tiny row per chat turn at high frequency." Lakebase is Databricks's managed Postgres — same governance, right tool for the job.
@@ -211,14 +209,14 @@ This repo combines three things: Spec-Kit for spec-driven design, Databricks Ass
 | II | **Parse once, extract many** | `ai_parse_document` runs once at Silver → VARIANT; everything downstream reads the parsed output |
 | III | **Declarative over imperative** | SDP SQL pipelines, Lakeflow Jobs, DAB resources — no production notebooks |
 | IV | **Quality before retrieval** | 5-dim rubric scores every section; only ≥22/30 reach the index. Embed `summary`, not raw text |
-| V | **Eval-gated agents** | MLflow CLEARS scores must clear thresholds before any deploy is considered complete |
+| V | **Eval-gated Agent Bricks** | CLEARS scores must clear thresholds before any deploy is considered complete |
 | VI | **Reproducible deploys** | `databricks bundle deploy -t <env>` recreates the entire stack; `demo` and `prod` parity enforced |
 
 When you read `specs/001-doc-intel-10k/plan.md` you'll see a "Constitution Check" gate that maps each design decision back to the principle it satisfies. When you read `specs/001-doc-intel-10k/tasks.md` you'll see how each task derives from the plan, and how user-stories (P1, P2, P3) are independently demoable.
 
 ### Pillar 2 — Databricks Asset Bundles + the Claude Code skill suite
 
-[**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe most of the workspace state as YAML. One root `databricks.yml` declares variables and targets (`demo`, `prod`); `resources/**/*.yml` declares each resource (pipeline, jobs, Vector Search endpoint, index-refresh job, serving endpoint, app, monitor, dashboard, Lakebase instance + catalog). `databricks bundle deploy -t demo` reconciles workspace state to YAML. The two non-DAB-managed pieces — the Vector Search **index** itself and the registered **model version** — are produced at runtime by `jobs/index_refresh/sync_index.py` and `agent/log_and_register.py` respectively, which the bootstrap script orchestrates.
+[**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe most of the workspace state as YAML. One root `databricks.yml` declares variables and targets (`demo`, `prod`); `resources/**/*.yml` declares each resource (pipeline, jobs, Vector Search endpoint, index-refresh job, Agent Bricks endpoint/configuration, app, monitor, dashboard, Lakebase instance + catalog). `databricks bundle deploy -t demo` reconciles workspace state to YAML. The Vector Search **index** is still created and synced by `jobs/index_refresh/sync_index.py` until DAB supports index resources directly.
 
 This repo was built with Databricks-specific Claude Code skill bundles. Those bundles are distributed by Databricks via the CLI / Claude Code plugin channel and **are not vendored in this open-source tree** — install them locally if you have access, or reference the canonical Databricks docs (mapping in [`../CONTRIBUTING.md`](../CONTRIBUTING.md)).
 
@@ -230,7 +228,7 @@ This repo was built with Databricks-specific Claude Code skill bundles. Those bu
 | **databricks-jobs** | Lakeflow Jobs with retries, schedules, table-update / file-arrival triggers | [docs](https://docs.databricks.com/aws/en/jobs/) |
 | **databricks-apps** | Databricks Apps (Streamlit), App resource bindings | [docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/) |
 | **databricks-lakebase** | Lakebase Postgres instances, branches, computes, endpoint provisioning | [docs](https://docs.databricks.com/aws/en/oltp/) |
-| **databricks-model-serving** | Model Serving endpoints, AI Gateway, served entities, scaling config | [docs](https://docs.databricks.com/aws/en/machine-learning/model-serving/) |
+| **databricks-agent-bricks** | Knowledge Assistant, Supervisor Agent, UC tools, endpoint lifecycle | [docs](https://docs.databricks.com/aws/en/generative-ai/agent-bricks/knowledge-assistant) |
 
 Skills are loaded by Claude Code on demand. When you ask Claude to "wire up Vector Search," it should read the Databricks pipeline/model-serving guidance *before* writing YAML, so the output reflects current Databricks API shapes — not stale training data.
 
@@ -261,16 +259,16 @@ DABs deploy *everything in one shot*. But our resources have a chicken-and-egg p
         │   ▸ Pipeline   ────┐                           │
         │   ▸ Tables     ────┼──── all need each other  │
         │   ▸ Vector idx  ───┤                           │
-        │   ▸ Model       ───┤    Monitor wants the      │
-        │   ▸ Endpoint   ────┤    KPI table to exist     │
+        │   ▸ Agent Bricks ──┤    Monitor wants the      │
+        │   ▸ App         ───┤    KPI table to exist     │
         │   ▸ App         ───┤    BEFORE it can attach   │
         │   ▸ Monitor    ────┘                           │
         │   ▸ Lakebase   ────                            │
         └────────────────────────────────────────────────┘
 
-   Endpoint needs a registered model version.
-        Model version needs the model logged.
-              Model logging needs the agent code.
+   App needs the Agent Bricks Supervisor endpoint.
+        Supervisor needs Knowledge Assistant + UC function tools.
+              Knowledge Assistant needs the Vector Search index.
                     Monitor needs the table populated.
                           Table needs the pipeline to run.
 
@@ -289,7 +287,6 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-demo.sh`. Reso
    │   └── lakebase_instance.yml
    │
    └── consumers/         ← need foundation to be RUNNING and producing data
-       ├── agent.serving.yml     (needs registered model version)
        ├── kpi_drift.yml         (needs gold_filing_kpis table)
        ├── index_refresh.job.yml (needs source table)
        ├── analyst.app.yml       (needs Lakebase + agent endpoint)
@@ -297,10 +294,10 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-demo.sh`. Reso
        └── lakebase_catalog.yml  (needs instance AVAILABLE)
 ```
 
-**The bootstrap script auto-detects which mode to run** by checking whether the agent serving endpoint already has a populated config:
+**The bootstrap script auto-detects which mode to run** by checking whether the Agent Bricks Supervisor endpoint exists:
 
 ```
-                       does analyst-agent-${target} have served entities?
+                       does analyst-agent-${target} exist?
                                      │
                           no ◀───────┴───────▶ yes
                           │                     │
@@ -315,9 +312,9 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-demo.sh`. Reso
                 │ 2. bundle deploy │   │ 2. refresh data: │
                 │    (foundation)  │   │    upload, run   │
                 │ 3. produce data: │   │    pipeline,     │
-                │    upload, run,  │   │    register new  │
-                │    register      │   │    model version │
-                │    model         │   │    + repoint     │
+                │    upload, run,  │   │    sync index,   │
+                │    sync index,   │   │    update Agent  │
+                │    Agent Bricks  │   │    Bricks        │
                 │ 4. wait Lakebase │   │    serving in-   │
                 │    AVAILABLE     │   │    place         │
                 │ 5. restore yamls │   │                  │
@@ -335,11 +332,11 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-demo.sh`. Reso
                          └──────────────────────────┘
 ```
 
-**Why two modes?** DAB tracks resource state; if you run the temp-rename trick against an *existing* deployment, DAB sees the consumer YAMLs as removed and plans to **delete** the serving endpoint, app, monitor, etc. Safe-ish on a fresh workspace; destructive in steady-state. The script detects mode and does the right thing.
+**Why two modes?** DAB tracks resource state; if you run the temp-rename trick against an existing deployment, DAB sees the consumer YAMLs as removed and plans to delete the app, monitor, dashboard, etc. Appropriate on a fresh workspace; destructive in steady-state. The script detects mode and does the right thing.
 
-CI (`.github/workflows/deploy.yml`) assumes steady-state — the first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-demo.sh`. After that, every push to `main` runs the steady-state path: full `bundle deploy` → refresh data → repoint serving endpoint → grants → CLEARS gate.
+CI (`.github/workflows/deploy.yml`) assumes steady-state — the first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-demo.sh`. After that, every push to `main` runs the steady-state path: full `bundle deploy` → refresh data → sync index → update Agent Bricks → grants → CLEARS gate.
 
-For the per-step procedure and known failure modes, see [`runbook.md` § Known deploy ordering gaps](./runbook.md#known-deploy-ordering-gaps-discovered-in-the-2026-04-24-smoke-test).
+For the per-step procedure and known failure modes, see [`runbook.md` § Known deploy ordering gaps](./runbook.md#known-deploy-ordering-gaps).
 
 ---
 
@@ -347,9 +344,9 @@ For the per-step procedure and known failure modes, see [`runbook.md` § Known d
 
 - **Wiring `ai_parse_document` into Lakeflow SDP** — pattern for streaming-tables + `STREAM(...)` views + `APPLY CHANGES INTO` keyed on filename.
 - **Scoring document quality before retrieval** — five 0–6 dimensions in SQL, threshold filter on the index source.
-- **Logging a Mosaic AI agent to UC** — `mlflow.pyfunc` with both inputs *and* outputs in the signature (UC requirement), `AnyType` for variable-shape fields, `auth_policy` + `resources` for OBO.
-- **Grounding an agent with citations** — hybrid Vector Search → re-rank → top-k → LLM with explicit "cite sources [1] [2]" prompt.
+- **Building on Agent Bricks instead of custom agent loops** — Knowledge Assistant for cited document Q&A, Supervisor Agent for orchestration, deterministic KPI tool glue for structured comparisons.
+- **Grounding an agent with citations** — Document Intelligence output and the governed Vector Search / Knowledge Assistant source provide the citation-bearing context.
 - **Handling DAB deploy ordering** — chicken-egg dependencies between heterogeneous resources, solved with a 5-step bootstrap rather than `depends_on` (which DAB doesn't reliably honor across resource types).
 - **Gating deploys on MLflow eval** — `mlflow.evaluate(model_type="databricks-agent")` with documented metric keys, per-axis thresholds, exit-code gate in CI.
-- **End-to-end OBO** — `ModelServingUserCredentials` from `databricks_ai_bridge`, `CredentialStrategy.MODEL_SERVING_USER_CREDENTIALS` for Vector Search, MLflow `auth_policy` with `model-serving` + `vector-search` user scopes, App-side `user_api_scopes` declaration.
+- **End-to-end OBO** — Databricks Apps user-token passthrough, Agent Bricks / AI Gateway identity enforcement, UC permissions, and audit verification are production prerequisites.
 - **Spec-Kit + Claude Code + Databricks skills composing** — every artifact in `specs/` and `pipelines/` and `agent/` was generated through that loop.

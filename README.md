@@ -10,7 +10,7 @@
 A **Databricks-native document intelligence + agent** stack: parse PDFs once with `ai_parse_document`, classify and extract structured KPIs with `ai_classify` / `ai_extract`, score quality on a 5-dimension rubric, index high-quality summaries into Mosaic AI Vector Search, and serve a cited-answer agent through a Streamlit app on Databricks Apps. **Demonstrated on synthetic SEC 10-K filings**, but the architecture works for any structured document corpus (contracts, invoices, research reports, regulatory filings).
 
 > [!IMPORTANT]
-> Open-source **reference implementation**. The repo demonstrates production-grade Databricks patterns end-to-end, but it is not a turnkey production deployment. Read [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md), [`SECURITY.md`](./SECURITY.md), and [`VALIDATION.md`](./VALIDATION.md) before pointing real users at it.
+> Open-source **reference implementation** for production-grade Databricks patterns. Read [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md), [`SECURITY.md`](./SECURITY.md), and [`VALIDATION.md`](./VALIDATION.md) before pointing real users at it.
 
 ```
    SEC 10-K PDF                       Analyst's question
@@ -55,7 +55,7 @@ For motivation, architecture diagrams, the Spec-Kit + Claude Code build workflow
 ## Features
 
 - **End-to-end document intelligence pipeline** — Auto Loader ingest → `ai_parse_document` → section explosion → `ai_classify` + `ai_extract` → 5-dim quality rubric → Vector Search Delta-Sync index (the endpoint is DAB-managed; the index is created/synced by `jobs/index_refresh/sync_index.py`). SQL-only pipeline (Lakeflow Spark Declarative Pipelines).
-- **Cited-answer agent** — Mosaic AI Agent Framework (MLflow `pyfunc`), hybrid retrieval + Mosaic re-ranker, single-filing and cross-company supervisor paths. Logged with auth_policy for end-to-end OBO when the workspace supports it.
+- **Cited-answer agent** — Agent Bricks-first runtime: Knowledge Assistant for cited document Q&A, Supervisor Agent for cross-company orchestration, and a deterministic KPI tool for structured comparisons. No custom pyfunc, retrieval loop, or supervisor runtime is retained.
 - **Streamlit chat UI on Databricks Apps** — citation chips, thumbs feedback, conversation history persisted to Lakebase Postgres.
 - **Eval-gated promotion** — `mlflow.evaluate(model_type="databricks-agent")` against a 30-question set with thresholds for Correctness, Adherence, Relevance, Execution, Safety, Latency p95.
 - **Reproducible synthetic corpus** — `samples/synthesize.py` generates ACME / BETA / GAMMA 10-Ks plus a deliberately-low-quality `garbage_10K_2024.pdf` for the rubric-exclusion test (SC-006). No EDGAR dependency in CI.
@@ -67,7 +67,7 @@ For motivation, architecture diagrams, the Spec-Kit + Claude Code build workflow
 | Level | Meaning | Required evidence |
 |---|---|---|
 | Reference-ready | Synthetic corpus deploys and demonstrates the architecture end-to-end | Demo bundle validates, bootstrap succeeds, synthetic CLEARS passes |
-| Pilot-ready | Real 10-K filings validate parse/extract/retrieval behavior | Reference-ready + small real EDGAR corpus + reviewed costs/latency |
+| Pilot-ready | Real 10-K filings validate parse/extract/cited-answer behavior | Reference-ready + small real EDGAR corpus + reviewed costs/latency |
 | Production-ready | Analysts can use it under governed identity and operational SLOs | Pilot-ready + app-level OBO enabled, audit proof, alerts/dashboards, rollback tested |
 
 Full checklists in [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
@@ -101,22 +101,22 @@ You need a workspace with **all** of the following enabled:
 
 - Serverless SQL warehouse (AI Functions GA — `ai_parse_document`, `ai_classify`, `ai_extract`, `ai_query`)
 - Mosaic AI Vector Search (endpoint + Delta-Sync index)
-- Mosaic AI Agent Framework (`databricks-agents`)
-- Mosaic AI Model Serving (CPU instances; AI Gateway)
+- Agent Bricks (Knowledge Assistant, Supervisor Agent, Custom Agents on Apps)
+- AI Gateway with OBO / identity enforcement
 - Lakebase Postgres (preview / GA depending on region)
 - Databricks Apps (Streamlit runtime)
 - Lakehouse Monitoring
 - Unity Catalog with permission to create catalogs/schemas/volumes (or an existing schema you can write to)
 
-**Optional** but recommended for production-tier OBO:
+**Required for production identity:**
 
-- Databricks Apps **user token passthrough** (workspace admin setting). Without it, the app falls back to service-principal auth — see [`SECURITY.md`](./SECURITY.md).
+- Databricks Apps **user token passthrough** (workspace admin setting). The app must not fall back to broad service-principal reads — see [`SECURITY.md`](./SECURITY.md).
 
 ### Free trial signup
 
-Don't have a workspace? The fastest path is the **14-day Premium trial** at <https://databricks.com/try-databricks>. Verify each entitlement above is enabled in your trial workspace and region — Mosaic AI Vector Search, Lakebase, Databricks Apps, and Model Serving rollout varies by cloud and region, so a Premium tier doesn't automatically guarantee every feature is on. Workspace settings → Previews / Compute → Mosaic AI is the place to check.
+Don't have a workspace? The fastest path is the **14-day Premium trial** at <https://databricks.com/try-databricks>. Verify each entitlement above is enabled in your trial workspace and region — Mosaic AI Vector Search, Lakebase, Databricks Apps, Agent Bricks, and AI Gateway rollout varies by cloud and region, so a Premium tier doesn't automatically guarantee every feature is on. Workspace settings → Previews / Compute → Mosaic AI is the place to check.
 
-> Note: **Free Edition** at databricks.com/learn/free-edition does not include Mosaic AI Vector Search or Model Serving and **cannot run this reference**. Use the Premium trial.
+> Note: **Free Edition** at databricks.com/learn/free-edition does not include the required governed agent services and **cannot run this implementation**. Use the Premium trial.
 
 After signup:
 
@@ -197,12 +197,9 @@ After the first bring-up, iteration depends on what changed:
 databricks bundle deploy -t demo
 databricks bundle run -t demo analyst_app                      # apply app config + restart
 
-# Agent code changes (agent/*.py): register a new model version
-# and repoint the existing serving endpoint in-place.
-DOCINTEL_CATALOG=workspace \
-DOCINTEL_SCHEMA=docintel_10k_demo \
-DOCINTEL_WAREHOUSE_ID=<from-step-2> \
-  .venv/bin/python agent/log_and_register.py --target demo --serving-endpoint analyst-agent-demo
+# Agent Bricks configuration / tool glue changes
+databricks bundle deploy -t demo
+databricks bundle run -t demo analyst_app
 
 # Pipeline SQL changes that need to re-process existing filings
 databricks bundle run -t demo doc_intel_pipeline
@@ -255,10 +252,7 @@ Implementation uses `mlflow.evaluate(model_type="databricks-agent")` for the fou
 | `service_principal_id` | `""` | **Required** for `-t prod`; `bundle validate -t prod` fails loudly without it |
 | `warehouse_id` | looked up from `Serverless Starter Warehouse` | Used by index-refresh + dashboards |
 | `embedding_model_endpoint_name` | `databricks-bge-large-en` | Vector Search embeddings |
-| `foundation_model_endpoint_name` | `databricks-meta-llama-3-3-70b-instruct` | Agent answer generation |
-| `rerank_model_endpoint_name` | `databricks-bge-rerank-v2` | Mosaic re-ranker |
 | `quality_threshold` | `22` | Section quality cutoff (0-30) for index inclusion |
-| `top_k` | `5` | Citations returned after re-rank |
 | `max_pdf_bytes` | `52428800` (50 MB) | Reject filings larger than this |
 | `analyst_group` | `account users` | UC group granted SELECT/USE on schema, READ/WRITE on volume |
 
@@ -270,7 +264,7 @@ Override via `--var name=value` on any `bundle` command.
 |---|---|---|
 | `DOCINTEL_CATALOG` | yes | Bootstrap, CI, eval |
 | `DOCINTEL_SCHEMA` | yes | Same |
-| `DOCINTEL_WAREHOUSE_ID` | yes | Bootstrap (passed to bundle as `--var warehouse_id`, used by kpi-poll + smoke); `agent/log_and_register.py` (auth-policy SQL warehouse resource); `agent/tools.py` UC Function tool |
+| `DOCINTEL_WAREHOUSE_ID` | yes | Bootstrap (passed to bundle as `--var warehouse_id`, used by kpi-poll + smoke); `agent/tools.py` structured KPI tool |
 | `DOCINTEL_TARGET` | no (default `demo`) | Bootstrap |
 | `DOCINTEL_ANALYST_GROUP` | no (default `account users`) | UC grants in bootstrap + CI |
 | `DOCINTEL_WAIT_SECONDS` | no (default 600) | Bootstrap KPI-table poll timeout |
@@ -282,7 +276,7 @@ Override via `--var name=value` on any `bundle` command.
 ## Testing & validation
 
 ```bash
-# Unit tests (18 tests covering retrieval, agent routing, supervisor)
+# Unit tests for Agent Bricks tool glue and app helpers
 .venv/bin/python -m pytest agent/tests/ -q
 
 # Bundle schema + interpolation
@@ -294,10 +288,10 @@ bash -n scripts/bootstrap-demo.sh
 
 # Compile checks for all modified Python
 .venv/bin/python -m py_compile \
-  agent/_obo.py agent/analyst_agent.py agent/log_and_register.py \
-  agent/retrieval.py agent/supervisor.py agent/tools.py \
+  agent/tools.py \
   app/app.py app/lakebase_client.py \
-  evals/clears_eval.py scripts/wait_for_kpis.py samples/synthesize.py
+  evals/clears_eval.py scripts/bootstrap_agent_bricks.py \
+  scripts/wait_for_kpis.py samples/synthesize.py
 ```
 
 End-to-end is exercised by [`./scripts/bootstrap-demo.sh`](./scripts/bootstrap-demo.sh) against a real workspace; see [`VALIDATION.md`](./VALIDATION.md) for the full procedure with expected outputs.
@@ -311,11 +305,10 @@ End-to-end is exercised by [`./scripts/bootstrap-demo.sh`](./scripts/bootstrap-d
 | `./scripts/bootstrap-demo.sh` | Fresh-workspace bring-up (or after `bundle destroy`). Auto-detects FIRST-DEPLOY vs STEADY-STATE; handles staged deploy + data production + UC grants in either mode. |
 | `databricks bundle deploy -t demo` | YAML / pipeline / job / app config changes after the first bring-up. |
 | `databricks bundle run -t demo analyst_app` | After any change to `app/` or `resources/consumers/analyst.app.yml` — required to apply runtime config + restart the app. |
-| `python agent/log_and_register.py --target demo --serving-endpoint analyst-agent-demo` | After agent code changes (`agent/*.py`). Registers a new UC model version and repoints the existing serving endpoint in-place. |
 | `databricks bundle deploy -t prod --var service_principal_id=<sp-app-id>` | Production deploy, run as the prod SP. |
-| GitHub Actions on push to `main` | Steady-state CI: full `bundle deploy` → wait for Lakebase AVAILABLE → upload samples + run pipeline + register/promote agent → UC grants → `bundle run analyst_app` → CLEARS eval gate. (The first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-demo.sh`.) |
+| GitHub Actions on push to `main` | Steady-state CI: full `bundle deploy` → wait for Lakebase AVAILABLE → upload samples + run pipeline → Agent Bricks / AI Gateway validation → UC grants → `bundle run analyst_app` → CLEARS eval gate. (The first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-demo.sh`.) |
 
-For day-2 ops (rolling agent versions, debugging low quality scores, inspecting CLEARS metrics in MLflow), see [`docs/runbook.md`](./docs/runbook.md). For the production-readiness checklist, see [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
+For day-2 ops (Agent Bricks configuration validation, debugging low quality scores, inspecting CLEARS metrics in MLflow), see [`docs/runbook.md`](./docs/runbook.md). For the production-readiness checklist, see [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
 
 ---
 
@@ -325,7 +318,7 @@ For day-2 ops (rolling agent versions, debugging low quality scores, inspecting 
 databricks/
 ├── databricks.yml                 # Bundle root — variables + demo/prod targets
 ├── pipelines/sql/                 # Lakeflow SDP — Bronze → Silver → Gold (SQL only)
-├── agent/                         # Mosaic AI Agent Framework — pyfunc, retrieval, OBO
+├── agent/                         # Agent Bricks deterministic tool glue
 ├── app/                           # Streamlit on Databricks Apps + Lakebase client
 ├── evals/                         # MLflow CLEARS eval gate (dataset + runner)
 ├── jobs/                          # Lakeflow Jobs (retention, index refresh)
@@ -344,7 +337,7 @@ Top-level docs: [`CLAUDE.md`](./CLAUDE.md) (runtime guidance for Claude Code), [
 
 ## Limitations
 
-This is a **pilot-scale** reference implementation, not a turnkey production deployment:
+This is a production-oriented reference implementation with conservative scale defaults:
 
 | Limit | Value | Source |
 |---|---|---|
@@ -370,7 +363,7 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for local setup, the spec-kit workflo
 
 ## Security
 
-See [`SECURITY.md`](./SECURITY.md) for the identity model (App SP fallback vs end-to-end OBO), required UC grants, secrets-handling guidance, and how to report security issues in a fork or deployment.
+See [`SECURITY.md`](./SECURITY.md) for the mandatory end-to-end OBO identity model, required UC grants, secrets-handling guidance, and how to report security issues in a fork or deployment.
 
 ## License
 
@@ -381,4 +374,4 @@ Released under the [**MIT License**](./LICENSE) — Copyright (c) 2026 Sathish K
 - [**Spec-Kit**](https://github.com/github/spec-kit) — spec-driven development workflow for AI coding agents.
 - [**Claude Code**](https://claude.com/claude-code) — Anthropic's CLI for AI-assisted development.
 - [**Agent Skills**](https://github.com/anthropics/skills) — general-purpose Claude Code skill bundles.
-- [**Databricks**](https://www.databricks.com/) — Unity Catalog, Lakeflow Spark Declarative Pipelines, Mosaic AI Vector Search, Agent Framework, Model Serving, AI Gateway, Databricks Apps, Lakebase, Lakehouse Monitoring.
+- [**Databricks**](https://www.databricks.com/) — Unity Catalog, Document Intelligence AI Functions, Lakeflow Spark Declarative Pipelines, Mosaic AI Vector Search, Agent Bricks, AI Gateway, Databricks Apps, Lakebase, Lakehouse Monitoring.

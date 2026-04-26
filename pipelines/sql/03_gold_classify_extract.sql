@@ -3,8 +3,8 @@
 --
 -- Section explosion: the silver VARIANT carries a `$.sections[*]` array with
 -- {label, text} per parsed section. We POSEXPLODE that into per-section rows.
--- Filings whose VARIANT does not produce a usable sections array fall back to
--- a single full_document row so we never silently drop a parsed filing.
+-- Filings whose VARIANT does not produce a usable sections array are represented
+-- as a single full_document row so we never silently drop a parsed filing.
 
 CREATE OR REFRESH STREAMING TABLE gold_filing_sections_raw AS
 WITH sectioned AS (
@@ -22,9 +22,9 @@ WITH sectioned AS (
   WHERE s.parse_status IN ('ok', 'partial')
     AND variant_get(s.parsed, '$.sections') IS NOT NULL
 ),
-fallback AS (
-  -- Fallback: filings whose parsed VARIANT lacks $.sections still get one row
-  -- so downstream classification/extraction can run.
+whole_document AS (
+  -- Filings whose parsed VARIANT lacks $.sections still get one row so
+  -- downstream classification/extraction can run.
   SELECT
     s.filename,
     1                                                             AS section_seq,
@@ -38,7 +38,7 @@ fallback AS (
 )
 SELECT * FROM sectioned
 UNION ALL
-SELECT * FROM fallback;
+SELECT * FROM whole_document;
 
 CREATE OR REFRESH STREAMING TABLE gold_filing_sections
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');

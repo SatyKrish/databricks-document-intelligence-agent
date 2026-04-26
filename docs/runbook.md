@@ -33,15 +33,18 @@ If a filing scores below threshold:
 - It is retained in `gold_filing_sections` and `gold_filing_kpis` for audit (FR-005, SC-006).
 - It is **excluded** from `gold_filing_sections_indexable` and therefore from Vector Search.
 
-## Roll an agent endpoint version
+## Update Agent Bricks configuration
 
-The Model Serving endpoint follows the UC Model Alias `@demo` (or `@prod`), not a pinned version. To roll forward:
+Agent Bricks resources are managed by `scripts/bootstrap_agent_bricks.py`. Run it after changes to Knowledge Assistant instructions, Supervisor instructions, or the KPI tool function:
 
 ```bash
-DOCINTEL_CATALOG=<catalog> DOCINTEL_SCHEMA=<schema> python agent/log_and_register.py --target demo
+DOCINTEL_CATALOG=<catalog> \
+DOCINTEL_SCHEMA=<schema> \
+DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
+python scripts/bootstrap_agent_bricks.py --target demo
 ```
 
-This registers a new version and reassigns `@demo`. The serving endpoint will pick the new version on its next traffic refresh (a few minutes). To roll back, use the UC Model Registry UI to re-point the alias to the prior version.
+This creates or updates the Knowledge Assistant, syncs the Vector Search knowledge source, creates or updates the UC SQL KPI function, and wires both into the Supervisor Agent endpoint.
 
 ## Inspect CLEARS metrics in MLflow
 
@@ -63,30 +66,26 @@ Failures are logged as a JSON list under the run tag `failures`. The script exit
 | Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (documented destructive-update behavior — see [Databricks Apps deploy docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy)) | Re-apply: `databricks apps update doc-intel-analyst-demo --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read` |
 | Streamlit user sees stale UC permissions | OBO token captured at WebSocket open; never refreshes ([Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)) | Reload the page after permission changes |
 | Lakebase tables not writable from deployed App | Local-dev `streamlit run` initialised schema under user identity, not App SP | Connect as App SP and `DROP TABLE feedback, query_logs, conversation_history`; next App run re-creates them under SP. See `app/README.md` |
-| CLEARS Latency axis fails | Re-rank window too large | Reduce candidate window in `agent/retrieval.py` from 25 to 15 |
+| CLEARS Latency axis fails | Agent Bricks orchestration or Knowledge Assistant source is too broad | Narrow the Knowledge Assistant source, tune Supervisor instructions, or reduce structured-tool fan-out |
 | App errors connecting to Lakebase | Database resource binding missing Postgres env vars | Check the `docintel-lakebase` resource binding and `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` in the App runtime |
 
-## Enabling end-to-end OBO
+## Verifying end-to-end OBO
 
-If your workspace lacks the "Databricks Apps - user token passthrough" feature, OBO end-to-end is operationally disabled until an admin turns it on. The agent code is OBO-ready (`agent/_obo.user_workspace`, `VectorSearchClient(credential_strategy=CredentialStrategy.MODEL_SERVING_USER_CREDENTIALS)` in `retrieval.py`, `auth_policy` declared in `log_and_register.py`), and the app forwards `x-forwarded-access-token` via `app/app.py:_user_client`. **What's missing is the App-side scope declaration**, which the workspace rejects until the feature is enabled.
+Databricks Apps user-token passthrough, Agent Bricks OBO, AI Gateway identity enforcement, and UC grants are production prerequisites. Bootstrap must fail if any required scope or workspace feature is missing.
 
-**Bootstrap prints a `⚠ APP-LEVEL OBO IS OPERATIONALLY DISABLED` banner** whenever the `user_api_scopes` block in `resources/consumers/analyst.app.yml` is commented out, so this state is visible in every bring-up log.
-
-To enable OBO end-to-end:
+To verify OBO end-to-end:
 
 1. **Workspace admin** enables the "Databricks Apps - user token passthrough" feature in workspace settings.
-2. Uncomment the `user_api_scopes` block in `resources/consumers/analyst.app.yml`. Required scopes for the analyst app's call chain:
+2. Confirm the `user_api_scopes` block in `resources/consumers/analyst.app.yml` is present. Required scopes for the analyst app's call chain:
    ```yaml
    user_api_scopes:
-     - serving.serving-endpoints     # invoke analyst-agent endpoint as user
-     - sql                            # agent's tools.py runs UC SQL
+     - serving.serving-endpoints     # invoke Agent Bricks endpoint as user
+     - sql                            # structured KPI tool runs UC SQL
      - iam.access-control:read        # default
      - iam.current-user:read          # default
    ```
 3. Redeploy: `databricks bundle deploy -t demo && databricks bundle run -t demo analyst_app`.
-4. Verify: bootstrap step 5's scope check now asserts (rather than skipping). Visit the deployed app, ask a question, confirm in audit logs that the agent's UC SQL runs under the user's identity (not the app SP).
-
-The agent-side `auth_policy` declared in `log_and_register.py` uses the **agent-side** scopes (`model-serving`, `vector-search`) per the Model Serving OBO docs — these are different from the App-side scopes above and need no workspace feature flag; they just plumb the per-request user token through the served pyfunc.
+4. Verify: bootstrap scope checks assert required scopes. Visit the deployed app, ask a question, and confirm in audit logs that Agent Bricks, Knowledge Assistant, and structured KPI SQL calls run under the invoking user's identity.
 
 ## CLEARS thresholds
 
@@ -117,32 +116,30 @@ P3 correctness:  <value>
 Latency p95:     <ms>
 ```
 
-## Known deploy ordering gaps (discovered in the 2026-04-24 smoke test)
+## Known deploy ordering gaps
 
 The bundle has three chicken-egg dependencies that a single `bundle deploy` cannot
 resolve on a fresh workspace. Each needs a phase-2 step after a prior side effect:
 
-1. **Model Serving endpoint references a concrete agent model version**
-   - `resources/consumers/agent.serving.yml` must contain a numeric placeholder
-     because DAB serving config may reject UC alias syntax.
-   - CI registers a fresh model version and then calls
-     `agent/log_and_register.py --target demo --serving-endpoint analyst-agent-demo`
-     to update the served entity to the new version.
-   - **Fix**: for local deploys, run the same registration command after bundle
-     deploy, or bootstrap the endpoint once and let the script advance it.
+1. **Databricks App binds to an Agent Bricks endpoint**
+   - `resources/consumers/analyst.app.yml` binds to `analyst-agent-${target}`.
+   - The endpoint is created by `scripts/bootstrap_agent_bricks.py` after the
+     Vector Search index exists.
+   - **Fix**: bootstrap creates data and Agent Bricks resources before the full
+     consumer deploy.
 
 2. **Lakehouse Monitor references `gold_filing_kpis` which the pipeline must create first**
    - `resources/consumers/kpi_drift.yml` attaches to a table that doesn't exist
      until the pipeline has run at least once.
-   - **Fix**: move the monitor into a separate `bundle deploy --include monitors`
-     step run after the first pipeline trigger, or comment out the monitor on
-     fresh deploys and add it after the first ingest.
+   - **Fix**: stage the first deploy so the pipeline runs before consumers are
+     reconciled.
 
 3. **Lakebase `database_catalog` and `App` race the `database_instance` provisioning**
    - The catalog and app attach to the instance before the instance has finished
      coming up. Re-running `bundle deploy` immediately after the first attempt
      usually succeeds since the instance is then ready.
-   - **Fix**: `bundle deploy -t demo` twice on first stand-up, or add a wait task.
+   - **Fix**: bootstrap waits for Lakebase to reach `AVAILABLE` before the full
+     consumer deploy.
 
 A clean fresh-workspace bring-up is a single command:
 
@@ -158,28 +155,27 @@ The script implements a **staged deploy**: resources are split into
 data). Stage 1 temporarily renames consumer YAMLs to `*.yml.skip` so the
 bundle's `resources/**/*.yml` glob excludes them — foundation deploys
 cleanly. Stage 2 brings up data (sample upload, pipeline run, VS index
-materialization, model register, Lakebase ready) and then runs full `bundle deploy`, with all
+materialization, Agent Bricks bootstrap, Lakebase ready) and then runs full `bundle deploy`, with all
 consumer dependencies satisfied. The previous "errors tolerated on first
 deploy" workaround is gone — both deploys succeed cleanly.
 
 Six-step flow:
 
-1. **Orphan detection** — delete a malformed serving endpoint with no
-   served entities (leftover from a prior partial run); fail loudly if
+1. **Environment conflict checks** — fail loudly if
    the configured Lakebase name is in `DELETING` state (soft-delete
    retention conflict — bump the suffix and retry).
 2. **Foundation deploy** — `resources/consumers/*.yml` renamed to
    `*.yml.skip`; `bundle deploy` only touches catalog/schema/volume,
    pipeline, retention job, Lakebase instance, Vector Search endpoint.
 3. **Produce data** — upload synthetic samples, run pipeline, wait for
-   `gold_filing_kpis`, materialize the Vector Search index, register
-   agent model (no `--serving-endpoint`, endpoint doesn't exist yet),
+   `gold_filing_kpis`, materialize the Vector Search index, bootstrap
+   Agent Bricks Knowledge Assistant + Supervisor Agent,
    wait for Lakebase to reach `AVAILABLE`.
 4. **Consumer deploy** — full `bundle deploy` (foundation idempotent;
    consumers create cleanly because all deps are live).
 5. **App run + UC grants chain** — `bundle run analyst_app`,
    `USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE` for the analyst group.
-6. **Smoke check** — query the serving endpoint with one sample question.
+6. **Smoke check** — query the Agent Bricks Supervisor endpoint with one sample question.
 
-CI (`.github/workflows/deploy.yml`) uses the same staged shape so steady-
-state pushes don't re-introduce orphans.
+CI (`.github/workflows/deploy.yml`) uses the same staged shape for steady-
+state pushes.

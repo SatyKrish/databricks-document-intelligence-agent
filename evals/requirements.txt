@@ -1,3 +1,3 @@
 mlflow>=2.20
 databricks-agents>=0.10
-databricks-sdk>=0.40
+databricks-sdk>=0.105,<1

@@ -47,9 +47,17 @@ jobs:
       - name: Install Python deps
         run: pip install -r agent/requirements.txt -r evals/requirements.txt
 
+      - name: Verify steady-state Agent Bricks endpoint exists
+        run: |
+          endpoint="analyst-agent-demo"
+          if ! databricks api get "/api/2.0/serving-endpoints/${endpoint}" >/dev/null 2>&1; then
+            echo "::error::Agent Bricks supervisor endpoint ${endpoint} is missing. Run ./scripts/bootstrap-demo.sh once for first workspace bring-up, then rerun CI."
+            exit 1
+          fi
+
       - name: Deploy bundle (full — consumers already exist in steady-state)
-        # Pin warehouse_id so the dashboard + serving env match what
-        # wait_for_kpis / log_and_register use. Without --var, the bundle
+        # Pin warehouse_id so the dashboard and Agent Bricks bootstrap match
+        # wait_for_kpis. Without --var, the bundle
         # falls back to its `lookup: warehouse: Serverless Starter Warehouse`
         # default and silently picks a different ID.
         run: databricks bundle deploy -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID"
@@ -81,7 +89,7 @@ while True:
         env:
           LAKEBASE_NAME: ${{ vars.DOCINTEL_LAKEBASE_NAME || 'docintel-demo-state-v1' }}
 
-      - name: Refresh data — upload samples, run pipeline, register new model version
+      - name: Refresh data and Agent Bricks configuration
         run: |
           for f in samples/*_10K_*.pdf; do
             databricks fs cp "$f" \
@@ -90,9 +98,12 @@ while True:
           done
           databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" doc_intel_pipeline
           python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
-          # --serving-endpoint repoints the existing endpoint to the new
-          # model version in-place (steady-state idempotent operation).
-          python agent/log_and_register.py --target demo --serving-endpoint analyst-agent-demo
+          databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" index_refresh
+          python scripts/bootstrap_agent_bricks.py \
+            --target demo \
+            --catalog "$DOCINTEL_CATALOG" \
+            --schema "$DOCINTEL_SCHEMA" \
+            --warehouse-id "$DOCINTEL_WAREHOUSE_ID"
 
       - name: Apply UC grants (catalog + schema; not DAB-supported)
         # UC requires the full chain: USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE.
@@ -116,12 +127,10 @@ while True:
 
       - name: Verify OBO scopes survived deploy
         # `bundle run` may wipe user_api_scopes (documented destructive-update
-        # behavior). Fail loudly so we re-apply. Skipped when user_api_scopes
-        # are not declared (workspace feature off).
+        # behavior). Fail loudly because user-token passthrough is mandatory.
         run: |
-          if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml; then
-            databricks apps get doc-intel-analyst-demo --output json > /tmp/app.json
-            python -c "
+          databricks apps get doc-intel-analyst-demo --output json > /tmp/app.json
+          python -c "
 import json
 app = json.load(open('/tmp/app.json'))
 scopes = set(app.get('user_api_scopes') or [])
@@ -129,9 +138,6 @@ required = {'serving.serving-endpoints', 'sql'}
 missing = required - scopes
 assert not missing, f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})'
 "
-          else
-            echo "user_api_scopes not declared (workspace feature off); skipping OBO scope check"
-          fi
 
       - name: CLEARS evaluation gate
         run: python evals/clears_eval.py --endpoint analyst-agent-demo --dataset evals/dataset.jsonl

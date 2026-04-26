@@ -3,15 +3,15 @@
 #
 # Two modes, auto-detected:
 #
-#   FIRST DEPLOY (no serving endpoint yet)
-#     resources/ has chicken-egg dependencies: consumers (serving endpoint,
-#     monitor, app, lakebase catalog, index-refresh job) need foundation data
-#     (registered model, populated KPI table, AVAILABLE Lakebase). DAB
-#     deploys everything in one shot, so we stage:
+#   FIRST DEPLOY (no Agent Bricks supervisor endpoint yet)
+#     resources/ has chicken-egg dependencies: consumers (app, monitor,
+#     lakebase catalog, index-refresh job) need foundation data (populated KPI
+#     table, Vector Search index, Agent Bricks endpoint, AVAILABLE Lakebase).
+#     DAB deploys everything in one shot, so we stage:
 #       1. Hide resources/consumers/*.yml → *.yml.skip; bundle deploy
 #          touches only foundation. Trap restores on any exit.
 #       2. Produce data: samples → pipeline → wait for KPIs → materialize
-#          VS index → register model → wait for Lakebase AVAILABLE.
+#          VS index → configure Agent Bricks → wait for Lakebase AVAILABLE.
 #       3. Restore consumer YAMLs; bundle deploy full bundle. All deps
 #          satisfied; consumers create cleanly.
 #
@@ -20,8 +20,7 @@
 #     would plan to DELETE any resource that disappears from config (per
 #     Databricks bundle docs — removed config = removed workspace resource).
 #     So in steady state we do a normal full bundle deploy and refresh data
-#     in place: samples → pipeline → register a new model version → repoint
-#     the serving endpoint via _promote_serving_endpoint.
+#     in place: samples → pipeline → sync the index → update Agent Bricks.
 #
 # Common to both: bundle run analyst_app (apply config + restart),
 # UC grants chain, smoke check.
@@ -71,7 +70,7 @@ if [[ "${DOCINTEL_FORCE_LOCK:-0}" == "1" ]]; then
 fi
 
 # Pin the bundle's `warehouse_id` variable to the user-selected ID so the
-# dashboard + serving-endpoint env match wait_for_kpis / log_and_register.
+# dashboard and Agent Bricks bootstrap match wait_for_kpis.
 # Without this, the bundle falls back to its `lookup: warehouse: Serverless
 # Starter Warehouse` default — which fails validation in workspaces lacking
 # that named warehouse, and silently picks a different ID otherwise.
@@ -90,24 +89,16 @@ else
 fi
 
 # ─── First-deploy detection ──────────────────────────────────────────────────
-# A serving endpoint with a populated config means consumers were deployed
-# previously (or the deploy got partway). Treat anything else as first deploy.
+# An existing Agent Bricks supervisor endpoint means consumers were deployed
+# previously (or the deploy got partway). Treat absence as first deploy.
 detect_mode() {
   if [[ "${DOCINTEL_FORCE_FIRST:-0}" == "1" ]]; then
     echo "first"
     return
   fi
-  if ep_state=$(databricks api get "/api/2.0/serving-endpoints/${ENDPOINT}" --output json 2>/dev/null); then
-    has_entity=$("$PYTHON" -c "
-import json, sys
-ep = json.loads(sys.argv[1])
-served = (ep.get('config') or {}).get('served_entities') or (ep.get('config') or {}).get('served_models') or []
-print('yes' if served else 'no')
-" "$ep_state" 2>/dev/null || echo "no")
-    if [[ "$has_entity" == "yes" ]]; then
-      echo "steady"
-      return
-    fi
+  if databricks api get "/api/2.0/serving-endpoints/${ENDPOINT}" --output json >/dev/null 2>&1; then
+    echo "steady"
+    return
   fi
   echo "first"
 }
@@ -115,24 +106,8 @@ print('yes' if served else 'no')
 MODE=$(detect_mode)
 log "detected mode: $MODE"
 
-# ─── Step 0: orphan detection + cleanup (always run) ────────────────────────
-log "step 0/6: detecting orphans from prior failed runs"
-
-# Malformed serving endpoint: exists but has no served entities.
-if ep_state=$(databricks api get "/api/2.0/serving-endpoints/${ENDPOINT}" --output json 2>/dev/null); then
-  if "$PYTHON" -c "
-import json, sys
-ep = json.loads(sys.argv[1])
-served = (ep.get('config') or {}).get('served_entities') or (ep.get('config') or {}).get('served_models') or []
-if not served:
-    sys.exit(0)
-sys.exit(1)
-" "$ep_state" 2>/dev/null; then
-    log "  → deleting malformed serving endpoint $ENDPOINT (no served entities)"
-    databricks api delete "/api/2.0/serving-endpoints/${ENDPOINT}" >/dev/null 2>&1 || \
-      log "  warn: delete failed, continuing"
-  fi
-fi
+# ─── Step 0: environment conflict checks (always run) ───────────────────────
+log "step 0/6: checking environment conflicts"
 
 # Lakebase soft-delete name conflict.
 LAKEBASE_NAME=$("$PYTHON" -c "
@@ -233,12 +208,8 @@ if [[ "$MODE" == "first" ]]; then
   "$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
     die "timed out waiting for $KPI_TABLE"
 
-  # Materialize the VS index BEFORE agent registration: the agent's auth_policy
-  # declares the VS index as a UC resource (DatabricksVectorSearchIndex), and
-  # MLflow validates its existence at create_model_version time. The VS
-  # endpoint is in foundation/ (created by stage-1 deploy), but the index is
-  # always created at runtime by sync_index.py. Stage-2's index_refresh job
-  # is too late.
+  # Materialize the VS index BEFORE Agent Bricks configuration so Knowledge
+  # Assistant can attach the governed index as its knowledge source.
   log "  creating Vector Search index ${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}.filings_summary_idx"
   "$PYTHON" jobs/index_refresh/sync_index.py \
     --endpoint "docintel-${TARGET}" \
@@ -248,8 +219,13 @@ if [[ "$MODE" == "first" ]]; then
     --embedding-endpoint "$EMBEDDING_ENDPOINT" || \
     die "VS index creation failed (sync_index.py)"
 
-  "$PYTHON" agent/log_and_register.py --target "$TARGET" || \
-    die "agent registration failed"
+  "$PYTHON" scripts/bootstrap_agent_bricks.py \
+    --target "$TARGET" \
+    --catalog "$DOCINTEL_CATALOG" \
+    --schema "$DOCINTEL_SCHEMA" \
+    --warehouse-id "$DOCINTEL_WAREHOUSE_ID" \
+    --analyst-group "$ANALYST_GROUP" || \
+    die "Agent Bricks bootstrap failed"
   wait_for_lakebase_available
 
   log "step 3/6: stage-2 deploy (full bundle — consumers join the foundation)"
@@ -270,15 +246,21 @@ else
   databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" ${DEPLOY_FLAGS[@]+"${DEPLOY_FLAGS[@]}"} || \
     die "bundle deploy failed; if a prior deploy was interrupted, set DOCINTEL_FORCE_LOCK=1 and retry"
 
-  log "step 2/6: refreshing data + repointing serving endpoint"
+  log "step 2/6: refreshing data + Agent Bricks configuration"
   upload_samples
   databricks bundle run -t "$TARGET" "${VAR_FLAGS[@]}" "$PIPELINE_KEY" || \
     die "pipeline run failed — inspect SDP UI before retrying"
   "$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
     die "timed out waiting for $KPI_TABLE"
-  # Register a new model version and update the served entity in-place.
-  "$PYTHON" agent/log_and_register.py --target "$TARGET" --serving-endpoint "$ENDPOINT" || \
-    die "agent registration failed"
+  databricks bundle run -t "$TARGET" "${VAR_FLAGS[@]}" index_refresh || \
+    log "  warn: index_refresh failed; the table_update trigger will retry on the next pipeline run"
+  "$PYTHON" scripts/bootstrap_agent_bricks.py \
+    --target "$TARGET" \
+    --catalog "$DOCINTEL_CATALOG" \
+    --schema "$DOCINTEL_SCHEMA" \
+    --warehouse-id "$DOCINTEL_WAREHOUSE_ID" \
+    --analyst-group "$ANALYST_GROUP" || \
+    die "Agent Bricks bootstrap failed"
 
   log "step 3/6: skipped (no second deploy needed in steady-state)"
 fi
@@ -313,21 +295,12 @@ missing = required - scopes
 if missing:
     raise SystemExit(f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})')
 print(f'  OBO scopes intact: {sorted(scopes)}')
-" || log "  warn: OBO scopes wiped — re-apply via 'databricks apps update $APP_NAME --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read'"
+" || die "OBO scopes missing after deploy"
+  else
+    die "unable to read app state for OBO verification"
   fi
 else
-  log ""
-  log "  ⚠ APP-LEVEL OBO IS OPERATIONALLY DISABLED"
-  log "     resources/consumers/analyst.app.yml has user_api_scopes commented out, so:"
-  log "       • Databricks Apps will NOT inject x-forwarded-access-token into requests."
-  log "       • app/app.py:_user_client falls back to SP creds for every user."
-  log "       • UC ACLs in the agent's downstream calls run as the app SP, not the user."
-  log "     This is a deliberate fallback because the workspace lacks the user-token-"
-  log "     passthrough feature. To enable OBO end-to-end:"
-  log "       1. Workspace admin enables 'Databricks Apps - user token passthrough'."
-  log "       2. Uncomment the user_api_scopes block in analyst.app.yml."
-  log "       3. Re-deploy: databricks bundle deploy -t $TARGET && databricks bundle run -t $TARGET analyst_app"
-  log ""
+  die "resources/consumers/analyst.app.yml must declare user_api_scopes; OBO is mandatory"
 fi
 
 # ─── Step 6: smoke check ─────────────────────────────────────────────────────
@@ -336,10 +309,9 @@ if smoke=$("$PYTHON" -c "
 from databricks.sdk import WorkspaceClient
 import json, sys
 w = WorkspaceClient()
-out = w.serving_endpoints.query(name='$ENDPOINT', inputs=[{'question': 'What was ACMEs revenue in fiscal 2024?', 'top_k': 3}])
-preds = out.predictions if hasattr(out, 'predictions') else out['predictions']
-r = preds[0] if isinstance(preds, list) else preds
-print(json.dumps({'grounded': r.get('grounded'), 'agent_path': r.get('agent_path'), 'citations': len(r.get('citations') or [])}))
+out = w.serving_endpoints.query(name='$ENDPOINT', input=[{'role': 'user', 'content': 'What was ACMEs revenue in fiscal 2024?'}])
+payload = out.as_dict() if hasattr(out, 'as_dict') else {}
+print(json.dumps({'endpoint': '$ENDPOINT', 'keys': sorted(payload.keys())[:12]}))
 " 2>&1); then
   log "  smoke OK: $smoke"
 else

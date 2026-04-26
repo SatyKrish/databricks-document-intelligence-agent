@@ -2,26 +2,25 @@
 
 ## Supported Security Posture
 
-This reference is designed for Databricks workspaces using Unity Catalog, service-principal deployment, Databricks Apps resource bindings, Model Serving auth policies, and optional end-to-end on-behalf-of (OBO) user identity.
+This reference is designed for Databricks workspaces using Unity Catalog, Agent Bricks, AI Gateway, Databricks Apps resource bindings, and mandatory end-to-end on-behalf-of (OBO) user identity.
 
 ## Identity Modes
 
 | Mode | Use | Production row-level security |
 |---|---|---|
-| App SP fallback | Local development, reference demos, workspaces without Apps user-token passthrough | No |
-| End-to-end OBO | Production analyst use | Yes, after audit verification |
+| End-to-end OBO | Demo and production analyst use | Yes, after audit verification |
 
-SP fallback is intentionally supported so the reference can run in workspaces that do not yet expose Databricks Apps user-token passthrough. It is not sufficient for production deployments that promise user-specific UC row/column enforcement.
+Service-principal fallback is not supported for the agent path. If Databricks Apps user-token passthrough, Agent Bricks OBO, or AI Gateway identity enforcement is unavailable, deployment must fail with an actionable prerequisite error.
 
 ## Enabling End-To-End OBO
 
 1. Workspace admin enables Databricks Apps user-token passthrough.
-2. Uncomment `user_api_scopes` in `resources/consumers/analyst.app.yml`.
+2. Declare the required `user_api_scopes` in `resources/consumers/analyst.app.yml`.
 3. Redeploy and run the app resource.
 4. Verify `serving.serving-endpoints` and `sql` scopes are present after deployment.
 5. Verify audit logs show downstream calls under the invoking user where required.
 
-The served agent also declares an MLflow auth policy in `agent/log_and_register.py` using Model Serving OBO scopes (`model-serving`, `vector-search`) and system resources.
+Agent Bricks / AI Gateway must enforce downstream access to document Q&A, SQL tools, models, and any external tools under the invoking user's identity. The previous custom MLflow auth-policy path has been removed from the production implementation.
 
 ## Secrets And Credentials
 

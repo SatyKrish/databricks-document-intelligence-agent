@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-**Databricks Document Intelligence Agent — Reference Implementation.**
+**Databricks Document Intelligence Agent - Agent Bricks implementation.**
 Active feature: **001-doc-intel-10k** — demonstrated on synthetic SEC 10-K filings.
 Drives a Bronze→Silver→Gold pipeline (`ai_parse_document` / `ai_classify` / `ai_extract`),
-Mosaic AI Vector Search index, agent endpoint behind AI Gateway, Streamlit App on Databricks Apps,
+Mosaic AI Vector Search index, Agent Bricks Supervisor endpoint behind AI Gateway, Streamlit App on Databricks Apps,
 Lakebase state, Lakehouse Monitoring, and an MLflow CLEARS eval gate — all in one DAB.
 
 For an end-to-end overview written for humans, read [`README.md`](./README.md).
@@ -16,15 +16,15 @@ For an end-to-end overview written for humans, read [`README.md`](./README.md).
 
 The bundle has three chicken-egg dependencies that prevent a single `databricks bundle deploy -t demo` from succeeding on a fresh workspace:
 
-1. **Model Serving endpoint** references a registered model version that doesn't exist until `agent/log_and_register.py` runs.
+1. **Databricks App resource binding** references the Agent Bricks Supervisor endpoint that `scripts/bootstrap_agent_bricks.py` creates after the Vector Search index exists.
 2. **Lakehouse Monitor** (`resources/consumers/kpi_drift.yml`) attaches to `gold_filing_kpis`, which doesn't exist until the pipeline runs once.
 3. **Lakebase database_catalog + Databricks App** race the `database_instance` provisioning.
 
-**Canonical fix**: Run `./scripts/bootstrap-demo.sh` for fresh stand-ups; plain `databricks bundle deploy -t demo` for steady-state. The script does a **staged deploy** — `resources/` is split into `foundation/` (no data deps) and `consumers/` (need data). Stage 1 temporarily renames consumer YAMLs to `*.yml.skip` so the bundle glob skips them; stage 2 produces data and then runs full `bundle deploy`. **Both deploys succeed cleanly** — no "errors tolerated" hand-waving, no orphans to clean up on retry.
+**Canonical fix**: Run `./scripts/bootstrap-demo.sh` for fresh stand-ups; plain `databricks bundle deploy -t demo` for steady-state. The script does a **staged deploy** — `resources/` is split into `foundation/` (no data deps) and `consumers/` (need data). Stage 1 temporarily renames consumer YAMLs to `*.yml.skip` so the bundle glob skips them; stage 2 produces data and then runs full `bundle deploy`. Both deploys should succeed cleanly.
 
 **Do NOT try to "fix" these by:**
 - Adding `depends_on` between heterogeneous DAB resource types — DAB doesn't reliably honor it across instance↔catalog↔app.
-- Switching `resources/consumers/agent.serving.yml` to UC alias syntax (`@demo`) — DAB serving config may reject alias syntax; that's why `_promote_serving_endpoint` exists in `agent/log_and_register.py`.
+- Reintroducing a custom MLflow pyfunc serving endpoint. Agent Bricks Knowledge Assistant + Supervisor Agent is the production path.
 - Splitting monitors into a separate target overlay — adds complexity for a one-time concern.
 
 Full breakdown lives in [`docs/runbook.md`](./docs/runbook.md) §"Known deploy ordering gaps".
@@ -33,13 +33,13 @@ Full breakdown lives in [`docs/runbook.md`](./docs/runbook.md) §"Known deploy o
 
 ```
 pipelines/sql/        Lakeflow SDP — Bronze → Silver → Gold (SQL only, principle III)
-agent/                Mosaic AI Agent Framework: pyfunc, retrieval, supervisor, UC tools, registration, OBO helpers
+agent/                Deterministic Agent Bricks tool glue only
 app/                  Streamlit on Databricks Apps + Lakebase psycopg client
 evals/                MLflow CLEARS gate (clears_eval.py + dataset.jsonl)
 jobs/                 Lakeflow Jobs Python tasks (retention, index_refresh)
 resources/foundation/ DAB resources with no data deps: catalog/schema/volume, pipeline, retention job, Lakebase instance
-resources/consumers/  DAB resources that depend on foundation data: serving endpoint, monitor, index-refresh job, app, dashboard, Lakebase catalog
-scripts/              Operational scripts (bootstrap-demo.sh, wait_for_kpis.py)
+resources/consumers/  DAB resources that depend on foundation data: monitor, index-refresh job, app, dashboard, Lakebase catalog
+scripts/              Operational scripts (bootstrap-demo.sh, bootstrap_agent_bricks.py, wait_for_kpis.py)
 samples/              Synthetic 10-K PDFs (regenerable via synthesize.py)
 specs/001-…           Spec-Kit artifacts (spec, plan, tasks, research, data-model, contracts, quickstart)
 docs/runbook.md       Day-2 ops + bring-up workflow
@@ -56,7 +56,7 @@ docs/runbook.md       Day-2 ops + bring-up workflow
 
 ## Tests & validation
 
-- `pytest agent/tests/` — unit tests for retrieval, agent routing, supervisor
+- `pytest agent/tests/` — unit tests for deterministic Agent Bricks tool glue
 - `databricks bundle validate -t demo` and `-t prod` — schema check both targets before merging
 - The CLEARS eval is the deploy gate; principle V says no agent ships without it passing
 
@@ -66,19 +66,17 @@ These were discovered the painful way during the 2026-04-25 bring-up. Future ses
 
 - **SDP streaming chains require explicit `STREAM(...)`**: a temp view that reads from `STREAM(upstream_table)` is itself a streaming view, and downstream references must wrap it in `STREAM(...)` again. Reference: `pipelines/sql/02_silver_parse.sql:23` (`FROM STREAM(silver_with_parsed)`).
 - **One Auto Loader source per path**: split downstream tables off a single `STREAM read_files(...)` via a temp streaming view. Reference: `pipelines/sql/01_bronze.sql` (`raw_pdf_arrivals` view); Auto Loader docs: https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/.
-- **Section explosion fallback**: `pipelines/sql/03_gold_classify_extract.sql` POSEXPLODES `parsed:sections[*]` and falls back to a single `full_document` row when the VARIANT lacks `$.sections` so we never lose a filing.
-- **MLflow + UC requires both inputs AND outputs in signatures**: an inputs-only signature is rejected at registration. For variable-shape fields like `citations` (array of dicts), use `mlflow.types.schema.AnyType()` to avoid serving-time truncation. Reference: `agent/log_and_register.py:_signature`.
+- **Section normalization**: `pipelines/sql/03_gold_classify_extract.sql` POSEXPLODES `parsed:sections[*]` and represents sectionless VARIANT output as one `full_document` row so we never lose a filing.
 - **`lakebase_stopped: true` is rejected on instance creation**: the API doesn't allow creating a database_instance directly into stopped state. Default is `false`; flip to `true` only after the instance exists. Reference: `databricks.yml` variable description.
 - **macOS doesn't ship `python`**: scripts must prefer `.venv/bin/python` then fall back to `python3`. Reference: `scripts/bootstrap-demo.sh`.
-- **`agent/log_and_register.py` needs `PYTHONPATH`**: it imports the `agent` package; run with `PYTHONPATH=$REPO_ROOT` or use the bootstrap script which exports it.
-- **Serving endpoint version drifts from YAML**: `resources/consumers/agent.serving.yml` pins `entity_version: "1"` as the bootstrap value. Steady-state CI re-registers new versions and uses `_promote_serving_endpoint` to update the served entity in-place. The YAML and the live endpoint diverge over time — that's intentional, not drift.
+- **Agent Bricks resources are SDK-managed**: `scripts/bootstrap_agent_bricks.py` creates/updates the Knowledge Assistant, its Vector Search knowledge source, the UC KPI function, and the Supervisor Agent. DAB still manages the surrounding data/app/monitor resources.
 - **Streamlit on Databricks Apps requires CORS+XSRF off via env vars**: not flags. `STREAMLIT_SERVER_ENABLE_CORS=false` and `STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false` in `app/app.yaml`. Databricks Apps runtime config: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime.
 - **`bundle deploy` doesn't apply app config / restart**: must follow with `databricks bundle run -t <target> analyst_app` (or use `databricks apps deploy`). Databricks Apps deploy docs: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy.
 - **`bundle run` may wipe `user_api_scopes`**: documented as a destructive-update behavior in the Databricks Apps deploy docs. Bootstrap step 5c re-asserts; CI verifies. If you change the App resource, double-check OBO scopes after.
 - **OBO token never refreshes on Streamlit**: captured at HTTP request, then WebSocket. Long sessions need a page reload to re-acquire.
 - **Lakebase init runs at startup under whatever creds the app process has**: in deployed mode that's the App SP (per resource binding); in local dev, set `DATABRICKS_CLIENT_ID/SECRET` to the App SP or tables get user-owned and break the deployed App. `lakebase_client.init_schema` warns on identity mismatch. See `app/README.md`.
 - **Prod `bundle validate` fails without `service_principal_id`**: that's the safety. Pass `--var service_principal_id=<sp-app-id>` for any prod operation.
-- **Prod `run_as` rejected by app/monitor/serving when validated as a user**: DAB requires `run_as == owner`, and these three resource types set their owner to the deploying identity. Local `bundle validate -t prod --var service_principal_id=…` as a *user* fails with three errors; CI authenticated as the *SP* (matching `service_principal_id`) validates and deploys cleanly. This is correct enforcement, not a bug.
+- **Prod `run_as` rejected by app/monitor resources when validated as a user**: DAB requires `run_as == owner`, and these resource types set their owner to the deploying identity. Local `bundle validate -t prod --var service_principal_id=...` as a user can fail; CI authenticated as the SP matching `service_principal_id` is the production validation path.
 
 ## Spec-Kit cycle
 

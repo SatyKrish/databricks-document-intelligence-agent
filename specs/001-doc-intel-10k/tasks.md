@@ -19,17 +19,17 @@ description: "Task list for Databricks 10-K Analyst implementation"
 
 ## Path Conventions
 
-This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, Python agent at `agent/`, Streamlit App at `app/`, evals at `evals/`, bundle resources at `resources/`. See plan.md for the full tree.
+This is a DAB plus Agent Bricks bootstrap project. SQL pipeline code is at `pipelines/sql/`, deterministic tool glue at `agent/`, Streamlit App at `app/`, evals at `evals/`, bundle resources at `resources/`, and Agent Bricks orchestration in `scripts/bootstrap_agent_bricks.py`. See plan.md for the full tree.
 
 ---
 
 ## Phase 1: Setup (Shared Infrastructure)
 
 - [ ] T001 Verify `databricks` CLI ≥ 0.260 is installed and `databricks auth profiles` shows a working profile; if missing, follow the official Databricks CLI installation docs
-- [x] T002 Create the bundle skeleton at `databricks.yml` with `bundle.name: doc-intel-10k`, `targets: {demo, prod}`, variables `catalog`, `schema`, `workspace_host`, `service_principal_id` (prod only), `embedding_model_endpoint_name`, `quality_threshold` (default 22), `top_k` (default 5)
+- [x] T002 Create the bundle skeleton at `databricks.yml` with `bundle.name: doc-intel-10k`, `targets: {demo, prod}`, variables `catalog`, `schema`, `service_principal_id` (prod only), `embedding_model_endpoint_name`, and `quality_threshold` (default 22)
 - [x] T003 [P] Add `.github/workflows/deploy.yml` running `databricks bundle validate -t demo` on PR and `databricks bundle deploy -t demo` + `python evals/clears_eval.py` on push to `main`
 - [x] T004 [P] Create empty `pipelines/sql/`, `agent/`, `app/`, `evals/`, `resources/{pipelines,jobs,vector_search,serving,lakebase,monitors,dashboards,apps}/` directories with `.gitkeep` files
-- [x] T005 [P] Add `agent/requirements.txt` (`mlflow>=2.20`, `databricks-agents`, `databricks-vectorsearch`, `databricks-sdk`) and `app/requirements.txt` (`streamlit`, `databricks-sdk`, `psycopg[binary]`)
+- [x] T005 [P] Add `agent/requirements.txt` (`databricks-vectorsearch`, `databricks-sdk`) and `app/requirements.txt` (`streamlit`, `databricks-sdk`, `psycopg[binary]`)
 
 ---
 
@@ -78,19 +78,19 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 
 ### Tests for US2 (TDD)
 
-- [x] T018 [P] [US2] Add `agent/tests/test_retrieval.py` covering: hybrid retrieval returns ≤25 candidates, re-rank trims to `top_k`, `embed_eligible=false` rows never returned, `company_filter` and `fiscal_year_filter` are honored
-- [x] T019 [P] [US2] Add `agent/tests/test_agent.py` covering: agent returns `grounded=true` only when ≥1 citation present, "no source found" path triggers when retrieval is empty, response validates against `contracts/agent-response.json`
+- [x] T018 [P] [US2] Remove custom retrieval tests and add `agent/tests/test_tools.py` coverage for deterministic KPI SQL parameterization
+- [x] T019 [P] [US2] Validate app-side Agent Bricks response normalization and citation rendering through Streamlit smoke/eval coverage
 
 ### Implementation for US2
 
 - [x] T020 [P] [US2] Define the Vector Search endpoint in `resources/foundation/filings_index.yml`; the Delta-Sync index over `${var.catalog}.${var.schema}.gold_filing_sections_indexable` is created by `jobs/index_refresh/sync_index.py` because DAB does not manage Vector Search indexes directly (depends on T013)
 - [x] T021 [P] [US2] Define the index-refresh Lakeflow Job in `resources/consumers/index_refresh.job.yml` with a table-update trigger on `gold_filing_sections_indexable` and a Python task that creates/syncs `${var.catalog}.${var.schema}.filings_summary_idx` (depends on T020)
-- [x] T022 [US2] Implement `agent/retrieval.py`: `hybrid_retrieve(question, top_k=25, filters=None)` calling Vector Search with `query_type='HYBRID'`, then `mosaic_rerank(question, candidates, top_k=5)`; returns list of citation dicts matching `agent-response.json` (depends on T020; tests T018 must fail first)
-- [x] T023 [US2] Implement `agent/tools.py`: a UC Function tool wrapping `SELECT * FROM gold_filing_kpis WHERE filename = :filename` for the agent to access structured KPIs deterministically
-- [x] T024 [US2] Implement `agent/analyst_agent.py`: a `mlflow.pyfunc` model class implementing the Mosaic AI Agent Framework chat protocol; uses `retrieval.hybrid_retrieve` for grounding, calls a foundation model endpoint to generate the answer, returns the schema in `contracts/agent-response.json` (depends on T022, T023)
-- [x] T025 [US2] Implement `agent/log_and_register.py`: `mlflow.pyfunc.log_model(...)`, `mlflow.register_model(...)` to UC at `${var.catalog}.${var.schema}.analyst_agent`; assign UC Model Alias `@demo` (and later `@prod`) to the freshly registered version so Model Serving in T026 follows the alias rather than a frozen version (depends on T024)
-- [x] T026 [US2] Define the Model Serving endpoint in `resources/consumers/agent.serving.yml`: CPU instance, served entity = `${var.catalog}.${var.schema}.analyst_agent`, AI Gateway with rate limit + audit enabled (depends on T025)
-- [x] T027 [US2] Implement `app/app.py` (Streamlit): chat input, calls the agent endpoint via `databricks.sdk.WorkspaceClient.serving_endpoints.query`, renders answer + citations as chips that show filename + section on hover, thumbs-up/down + comment widget that POSTs to a Lakebase write helper; persists `conversation_id` in session state (depends on T026, T007)
+- [x] T022 [US2] Remove custom retrieval implementation (`agent/retrieval.py`) and configure Agent Bricks Knowledge Assistant over the governed Document Intelligence / Vector Search source (depends on T020)
+- [x] T023 [US2] Implement `agent/tools.py` as deterministic structured KPI tool glue for Agent Bricks, wrapping governed SQL over `gold_filing_kpis`
+- [x] T024 [US2] Remove custom `agent/analyst_agent.py` and direct `mlflow.pyfunc` registration; Knowledge Assistant owns single-filing cited Q&A (depends on T022, T023)
+- [x] T025 [US2] Remove `agent/log_and_register.py` and bespoke model-version promotion from the production path; bootstrap configures Agent Bricks resources idempotently instead
+- [x] T026 [US2] Replace `resources/consumers/agent.serving.yml` with `scripts/bootstrap_agent_bricks.py` Agent Bricks endpoint/configuration behind AI Gateway with mandatory OBO and guardrails (depends on T024, T025)
+- [x] T027 [US2] Implement `app/app.py` (Streamlit): chat input, calls the Agent Bricks endpoint as the invoking user, renders answer + citations as chips, thumbs-up/down + comment widget that POSTs to a Lakebase write helper; persists `conversation_id` in session state (depends on T026, T007)
 - [x] T028 [US2] Implement `app/lakebase_client.py`: thin wrapper using `psycopg` with the bundle-injected DSN to insert into `conversation_history`, `query_logs`, `feedback`
 - [x] T029 [US2] Define the Databricks App in `resources/consumers/analyst.app.yml`: source = `app/`, runtime python, env = Lakebase binding + agent endpoint binding (depends on T027, T028)
 - [x] T030 [US2] Author `evals/dataset.jsonl` 20 P2 questions per `data-model.md`'s eval section (each with `expected_filename`, `expected_section`, `expected_answer_keywords`, `min_citations`)
@@ -110,13 +110,13 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 
 ### Tests for US3 (TDD)
 
-- [x] T034 [P] [US3] Add `agent/tests/test_supervisor.py` covering: supervisor fans out 1 sub-question per detected company, missing companies trigger explicit "not in corpus" handling, the rendered markdown table shape matches expected (header + N rows + citations column), aggregation is deterministic for the same inputs
+- [ ] T034 [P] [US3] Add deployed Agent Bricks Supervisor acceptance checks covering: Supervisor invokes Knowledge Assistant per detected company, invokes the KPI tool for structured fields, missing companies trigger explicit "not in corpus" handling, and the rendered markdown table shape matches expected
 
 ### Implementation for US3
 
-- [x] T035 [US3] Implement `agent/supervisor.py`: detects company names via a small classifier or LLM call, fans out a per-company query through `analyst_agent`, pulls structured `gold_filing_kpis` rows via `tools.py`, formats a markdown table; returns `agent_path='supervisor'` in the response (depends on T024, T023; tests T034 must fail first)
-- [x] T036 [US3] Update `agent/analyst_agent.py` to detect cross-company intent at the routing layer and delegate to `supervisor.handle()`; otherwise stay in single-filing path (depends on T035)
-- [x] T037 [US3] Re-run `agent/log_and_register.py` from CI (GH Actions deploy step in T003) to register a new UC model version with the supervisor enabled and re-assign alias `@demo`; the serving endpoint follows the alias so no yml edit is needed
+- [x] T035 [US3] Remove custom `agent/supervisor.py`; configure Agent Bricks Supervisor Agent instructions/tools to orchestrate Knowledge Assistant + KPI tool (depends on T024, T023)
+- [x] T036 [US3] Configure Agent Bricks routing/instructions for cross-company intent; no custom Python routing layer remains (depends on T035)
+- [x] T037 [US3] Update CI to validate/deploy Agent Bricks configuration directly; no `agent/log_and_register.py` step remains
 - [x] T038 [US3] Author 10 P3 questions in `evals/dataset.jsonl` (each with `expected_companies` and `expected_table_columns`) (depends on T030)
 - [x] T039 [US3] Extend `evals/clears_eval.py` to slice metrics by `category in {P2, P3}` and assert SC-002 ≥0.8 on P2, SC-003 ≥0.7 on P3 (depends on T031, T038)
 - [x] T040 [US3] Update `app/app.py` to render markdown tables (Streamlit `st.markdown(..., unsafe_allow_html=False)` already handles this) and surface a "show structured KPIs" expander next to each row (depends on T036)
@@ -146,19 +146,19 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 - **Phase 2 (Foundational)**: depends on Phase 1; **blocks all user stories**
 - **Phase 3 (US1)**: depends on Phase 2
 - **Phase 4 (US2)**: depends on Phase 3 (specifically T011, T013) — vector index needs `gold_filing_sections.embed_eligible`
-- **Phase 5 (US3)**: depends on Phase 4 (specifically T024) — supervisor wraps `analyst_agent`
+- **Phase 5 (US3)**: depends on Phase 4 (specifically T026) — Supervisor Agent wraps Knowledge Assistant and the KPI function
 - **Phase 6 (Polish)**: depends on all user stories complete
 
 ### User Story Dependencies
 
 - **US1**: independent given Phase 2 done
 - **US2**: depends on US1's Gold tables to have data to embed
-- **US3**: depends on US2's analyst agent to fan out
+- **US3**: depends on US2's Knowledge Assistant and KPI function
 
 ### Within Each User Story
 
 - Pipeline SQL files: T009 → T010 → T011 → T012 → T013 → T014 (linear within US1)
-- Agent code (US2): T020 → T022 → T024 → T025 → T026 → T031 (mostly linear); tests T018/T019 first
+- Agent Bricks bootstrap (US2): T020 → T022 → T024 → T025 → T026 → T031 (mostly linear); tests T018/T019 first
 - Supervisor (US3): T035 → T036 → T037 → T039 → T040
 
 ### Parallel Opportunities
@@ -167,7 +167,7 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 - T007, T008 in Phase 2 (after T006)
 - T009 (Bronze SQL) parallel with T015 (retention Job) and T016 (sample PDF) and T017 (initial dashboard)
 - T020 (VS index yml) and T021 (refresh Job yml) in parallel after T013
-- T018 and T019 (agent tests) parallel
+- T018 and T019 (Agent Bricks tool/app tests) parallel
 - T030 (P2 eval items) and T032 (Lakehouse Monitor) parallel within US2
 - T041, T042, T044, T045 in Phase 6
 
@@ -181,13 +181,13 @@ Task: "T020 Vector Search index yml"
 Task: "T021 Index-refresh Job yml"
 
 # Then write tests in parallel:
-Task: "T018 retrieval tests"
-Task: "T019 agent contract tests"
+Task: "T018 KPI tool tests"
+Task: "T019 app response normalization tests"
 
-# Then implement (sequential within agent/ Python module dependencies):
-Task: "T022 retrieval.py"
+# Then implement (sequential within Agent Bricks bootstrap dependencies):
+Task: "T022 Knowledge Assistant source"
 Task: "T023 tools.py"
-Task: "T024 analyst_agent.py" (depends on T022, T023)
+Task: "T024 remove pyfunc runtime" (depends on T022, T023)
 ```
 
 ---

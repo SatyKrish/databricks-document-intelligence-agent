@@ -1,6 +1,6 @@
 # Streamlit App — runtime + local-dev guide
 
-Source for the Databricks App `doc-intel-analyst-${target}`. Streamlit chat UI over the agent endpoint, with citation chips, thumbs feedback, and Lakebase persistence.
+Source for the Databricks App `doc-intel-analyst-${target}`. Streamlit chat UI over the Agent Bricks Supervisor endpoint, with citation chips, thumbs feedback, and Lakebase persistence.
 
 ## Files
 
@@ -23,7 +23,7 @@ The first request creates the `conversation_history`, `query_logs`, and `feedbac
 
 ## Running locally
 
-For iteration speed you may want to run the Streamlit app on your laptop against a deployed demo workspace. **Authenticate as the App's bound service principal** so Lakebase schema init produces the same ownership as the deployed App:
+For iteration speed you may run the Streamlit app on your laptop against a deployed demo workspace for Lakebase UI work. Authenticate as the App's bound service principal so Lakebase schema init produces the same ownership as the deployed App:
 
 ```bash
 export DATABRICKS_HOST=https://<your-workspace>.cloud.databricks.com
@@ -40,7 +40,9 @@ export DOCINTEL_AGENT_ENDPOINT=analyst-agent-demo
 streamlit run app/app.py
 ```
 
-If you accidentally run with user creds (`DATABRICKS_CLIENT_ID`/`SECRET` unset), `lakebase_client.init_schema()` logs a warning identifying the mismatch — the tables get created under your user account, not the App SP, and the deployed App will lose write access. Drop the user-owned tables and re-init under the App SP to recover:
+Local runs do not have the Databricks Apps `x-forwarded-access-token` header, so they cannot validate the Agent Bricks OBO path. Use the deployed App for agent validation.
+
+If you accidentally run Lakebase schema initialization with user creds (`DATABRICKS_CLIENT_ID`/`SECRET` unset), `lakebase_client.init_schema()` logs a warning identifying the mismatch. The tables get created under your user account, not the App SP, and the deployed App will lose write access. Drop the user-owned tables and re-init under the App SP to recover:
 
 ```sql
 -- connected as the App SP via the local-dev env above
@@ -52,10 +54,10 @@ DROP TABLE IF EXISTS conversation_history CASCADE;
 
 ## OBO (on-behalf-of) flow
 
-The app forwards each user's `x-forwarded-access-token` header to the agent serving endpoint via a `WorkspaceClient(token=...)` cache (`app.py:_user_client`). Agent-side UC SQL calls then run as the user, not the App SP — UC ACLs are honored end-to-end.
+The app forwards each user's `x-forwarded-access-token` header to the Agent Bricks Supervisor endpoint via a `WorkspaceClient(token=...)` cache (`app.py:_user_client`). Agent Bricks, Knowledge Assistant, and the UC KPI function must run under the invoking user's identity, not broad App SP reads.
 
-`user_api_scopes` declared in `resources/consumers/analyst.app.yml` (`serving.serving-endpoints`, `sql`, `iam.access-control:read`, `iam.current-user:read`) — required for app-level OBO to invoke the serving endpoint as the user. The agent-side Model Serving auth policy separately declares `model-serving` and `vector-search`.
+`user_api_scopes` declared in `resources/consumers/analyst.app.yml` (`serving.serving-endpoints`, `sql`, `iam.access-control:read`, `iam.current-user:read`) are required for app-level OBO. Deployment is invalid if these scopes are not granted.
 
 **Streamlit gotcha** (per the [Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)): the OBO token is captured at the initial HTTP request; the connection then upgrades to WebSocket and the token never refreshes. If a user's UC permissions change mid-session, ask them to reload the page.
 
-**Local-dev caveat**: `st.context.headers` won't have `x-forwarded-access-token` when running `streamlit run` outside the Databricks Apps reverse proxy, so the OBO helper falls back to the SP client. That's fine for development — UC ACLs in demo workspaces are usually permissive — but verify against deployed demo before assuming OBO works.
+**Local-dev caveat**: `st.context.headers` won't have `x-forwarded-access-token` when running `streamlit run` outside the Databricks Apps reverse proxy. The app raises a prerequisite error instead of using service-principal reads for agent calls.

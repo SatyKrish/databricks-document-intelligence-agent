@@ -32,6 +32,8 @@ import mlflow
 import pandas as pd
 from databricks.sdk import WorkspaceClient
 
+from app.agent_bricks_response import normalise_agent_response
+
 
 THRESHOLDS = {
     "correctness": 0.80,
@@ -91,9 +93,9 @@ def _load(path: str) -> list[dict[str, Any]]:
 def _query(endpoint: str, question: str) -> tuple[dict[str, Any], int]:
     w = WorkspaceClient()
     started = time.monotonic()
-    out = w.serving_endpoints.query(name=endpoint, inputs=[{"question": question, "top_k": 5}])
-    raw = out.predictions if hasattr(out, "predictions") else out["predictions"]
-    response = raw[0] if isinstance(raw, list) else raw
+    out = w.serving_endpoints.query(name=endpoint, input=[{"role": "user", "content": question}])
+    payload = out.as_dict() if hasattr(out, "as_dict") else dict(out)
+    response = normalise_agent_response(payload, empty_text="")
     return response, int((time.monotonic() - started) * 1000)
 
 
@@ -112,7 +114,10 @@ def _to_eval_record(item: dict[str, Any], response: dict[str, Any], latency_ms: 
         "response": response.get("answer", ""),
         "expected_facts": item.get("expected_facts", []),
         "retrieved_context": [
-            {"doc_uri": c.get("filename", ""), "content": c.get("snippet") or c.get("section_label", "")}
+            {
+                "doc_uri": c.get("filename") or c.get("doc_uri") or c.get("source") or "",
+                "content": c.get("snippet") or c.get("section_label") or c.get("title") or "",
+            }
             for c in citations
         ],
         "guidelines": item.get("guidelines", []) or GLOBAL_GUIDELINES,
@@ -152,7 +157,7 @@ def _enforce(result: Any, items: list[dict[str, Any]],
 
     # Custom axes: Execution from agent_path; Latency p95 from raw timings.
     executions = [
-        1.0 if r.get("agent_path") in {"analyst", "supervisor", "knowledge_assistant"} else 0.0
+        1.0 if r.get("agent_path") in {"agent_bricks_supervisor", "knowledge_assistant"} else 0.0
         for r in raw_responses
     ]
     summary["execution"] = statistics.mean(executions) if executions else 0.0

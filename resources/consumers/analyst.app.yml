@@ -19,27 +19,12 @@ resources:
             name: analyst-agent-${bundle.target}
             permission: CAN_QUERY
 
-      # OBO scopes (Databricks Apps IAM/auth docs:
+      # Mandatory OBO scopes (Databricks Apps IAM/auth docs:
       # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/iam-auth)
-      # require the workspace-level "Databricks Apps - user token passthrough"
-      # feature. If your workspace does NOT have it enabled, DAB rejects this
-      # field with PERMISSION_DENIED at deploy time — leave the block
-      # commented out and the app will fall back to SP creds (with a loud
-      # bring-up banner). Uncomment after a workspace admin enables the feature.
-      #
-      # Required scopes for this app's OBO call chain:
-      #   serving.serving-endpoints   — invoke analyst-agent-${target} as the user
-      #   sql                         — agent's tools.py runs UC SQL via warehouse
-      #   iam.access-control:read     — default
-      #   iam.current-user:read       — default
-      #
-      # The agent's pyfunc additionally calls Vector Search and downstream
-      # serving endpoints; those resources/scopes are declared in MLflow's
-      # auth_policy at log_model time (see agent/log_and_register.py
-      # _auth_policy), not here.
-      #
-      # user_api_scopes:
-      #   - serving.serving-endpoints
-      #   - sql
-      #   - iam.access-control:read
-      #   - iam.current-user:read
+      # require the workspace-level "Databricks Apps - user token passthrough".
+      # Deployment must fail if the workspace cannot grant these scopes.
+      user_api_scopes:
+        - serving.serving-endpoints
+        - sql
+        - iam.access-control:read
+        - iam.current-user:read
