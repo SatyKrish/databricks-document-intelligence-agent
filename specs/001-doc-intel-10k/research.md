@@ -91,8 +91,8 @@ under `databricks` CLI auth and inside the deployed App. React + FastAPI
 ## Decision: GitHub Actions for CI
 
 **Rationale**: User's existing host. The workflow has two jobs: `validate`
-on every PR (`databricks bundle validate -t dev`), and `deploy` on push to
-`main` (`databricks bundle deploy -t dev` → `python evals/clears_eval.py`
+on every PR (`databricks bundle validate -t demo`), and `deploy` on push to
+`main` (`databricks bundle deploy -t demo` → `python evals/clears_eval.py`
 → exit non-zero on threshold failure to block the deploy).
 
 ## Decision: 90-day retention via Lakeflow Job, not UC volume lifecycle

@@ -14,17 +14,17 @@ For an end-to-end overview written for humans, read [`README.md`](./README.md).
 
 ## Critical: deploy ordering hazard (READ FIRST before touching deploys)
 
-The bundle has three chicken-egg dependencies that prevent a single `databricks bundle deploy -t dev` from succeeding on a fresh workspace:
+The bundle has three chicken-egg dependencies that prevent a single `databricks bundle deploy -t demo` from succeeding on a fresh workspace:
 
 1. **Model Serving endpoint** references a registered model version that doesn't exist until `agent/log_and_register.py` runs.
 2. **Lakehouse Monitor** (`resources/consumers/kpi_drift.yml`) attaches to `gold_filing_kpis`, which doesn't exist until the pipeline runs once.
 3. **Lakebase database_catalog + Databricks App** race the `database_instance` provisioning.
 
-**Canonical fix**: Run `./scripts/bootstrap-dev.sh` for fresh stand-ups; plain `databricks bundle deploy -t dev` for steady-state. The script does a **staged deploy** — `resources/` is split into `foundation/` (no data deps) and `consumers/` (need data). Stage 1 temporarily renames consumer YAMLs to `*.yml.skip` so the bundle glob skips them; stage 2 produces data and then runs full `bundle deploy`. **Both deploys succeed cleanly** — no "errors tolerated" hand-waving, no orphans to clean up on retry.
+**Canonical fix**: Run `./scripts/bootstrap-demo.sh` for fresh stand-ups; plain `databricks bundle deploy -t demo` for steady-state. The script does a **staged deploy** — `resources/` is split into `foundation/` (no data deps) and `consumers/` (need data). Stage 1 temporarily renames consumer YAMLs to `*.yml.skip` so the bundle glob skips them; stage 2 produces data and then runs full `bundle deploy`. **Both deploys succeed cleanly** — no "errors tolerated" hand-waving, no orphans to clean up on retry.
 
 **Do NOT try to "fix" these by:**
 - Adding `depends_on` between heterogeneous DAB resource types — DAB doesn't reliably honor it across instance↔catalog↔app.
-- Switching `resources/consumers/agent.serving.yml` to UC alias syntax (`@dev`) — DAB serving config may reject alias syntax; that's why `_promote_serving_endpoint` exists in `agent/log_and_register.py`.
+- Switching `resources/consumers/agent.serving.yml` to UC alias syntax (`@demo`) — DAB serving config may reject alias syntax; that's why `_promote_serving_endpoint` exists in `agent/log_and_register.py`.
 - Splitting monitors into a separate target overlay — adds complexity for a one-time concern.
 
 Full breakdown lives in [`docs/runbook.md`](./docs/runbook.md) §"Known deploy ordering gaps".
@@ -38,8 +38,8 @@ app/                  Streamlit on Databricks Apps + Lakebase psycopg client
 evals/                MLflow CLEARS gate (clears_eval.py + dataset.jsonl)
 jobs/                 Lakeflow Jobs Python tasks (retention, index_refresh)
 resources/foundation/ DAB resources with no data deps: catalog/schema/volume, pipeline, retention job, Lakebase instance
-resources/consumers/  DAB resources that depend on foundation data: serving endpoint, monitor, VS endpoint, index-refresh job, app, dashboard, Lakebase catalog
-scripts/              Operational scripts (bootstrap-dev.sh, wait_for_kpis.py)
+resources/consumers/  DAB resources that depend on foundation data: serving endpoint, monitor, index-refresh job, app, dashboard, Lakebase catalog
+scripts/              Operational scripts (bootstrap-demo.sh, wait_for_kpis.py)
 samples/              Synthetic 10-K PDFs (regenerable via synthesize.py)
 specs/001-…           Spec-Kit artifacts (spec, plan, tasks, research, data-model, contracts, quickstart)
 docs/runbook.md       Day-2 ops + bring-up workflow
@@ -48,16 +48,16 @@ docs/runbook.md       Day-2 ops + bring-up workflow
 
 ## Build & deploy
 
-- Validate: `databricks bundle validate -t dev`
-- Fresh stand-up: `./scripts/bootstrap-dev.sh` (requires `DOCINTEL_CATALOG`, `DOCINTEL_SCHEMA`, `DOCINTEL_WAREHOUSE_ID`)
-- Steady-state deploy: `databricks bundle deploy -t dev`
-- Run pipeline: `databricks bundle run -t dev doc_intel_pipeline`
-- Run eval: `python evals/clears_eval.py --endpoint analyst-agent-dev --dataset evals/dataset.jsonl`
+- Validate: `databricks bundle validate -t demo`
+- Fresh stand-up: `./scripts/bootstrap-demo.sh` (requires `DOCINTEL_CATALOG`, `DOCINTEL_SCHEMA`, `DOCINTEL_WAREHOUSE_ID`)
+- Steady-state deploy: `databricks bundle deploy -t demo`
+- Run pipeline: `databricks bundle run -t demo doc_intel_pipeline`
+- Run eval: `python evals/clears_eval.py --endpoint analyst-agent-demo --dataset evals/dataset.jsonl`
 
 ## Tests & validation
 
 - `pytest agent/tests/` — unit tests for retrieval, agent routing, supervisor
-- `databricks bundle validate -t dev` and `-t prod` — schema check both targets before merging
+- `databricks bundle validate -t demo` and `-t prod` — schema check both targets before merging
 - The CLEARS eval is the deploy gate; principle V says no agent ships without it passing
 
 ## Working with this codebase — gotchas Claude has learned
@@ -69,7 +69,7 @@ These were discovered the painful way during the 2026-04-25 bring-up. Future ses
 - **Section explosion fallback**: `pipelines/sql/03_gold_classify_extract.sql` POSEXPLODES `parsed:sections[*]` and falls back to a single `full_document` row when the VARIANT lacks `$.sections` so we never lose a filing.
 - **MLflow + UC requires both inputs AND outputs in signatures**: an inputs-only signature is rejected at registration. For variable-shape fields like `citations` (array of dicts), use `mlflow.types.schema.AnyType()` to avoid serving-time truncation. Reference: `agent/log_and_register.py:_signature`.
 - **`lakebase_stopped: true` is rejected on instance creation**: the API doesn't allow creating a database_instance directly into stopped state. Default is `false`; flip to `true` only after the instance exists. Reference: `databricks.yml` variable description.
-- **macOS doesn't ship `python`**: scripts must prefer `.venv/bin/python` then fall back to `python3`. Reference: `scripts/bootstrap-dev.sh`.
+- **macOS doesn't ship `python`**: scripts must prefer `.venv/bin/python` then fall back to `python3`. Reference: `scripts/bootstrap-demo.sh`.
 - **`agent/log_and_register.py` needs `PYTHONPATH`**: it imports the `agent` package; run with `PYTHONPATH=$REPO_ROOT` or use the bootstrap script which exports it.
 - **Serving endpoint version drifts from YAML**: `resources/consumers/agent.serving.yml` pins `entity_version: "1"` as the bootstrap value. Steady-state CI re-registers new versions and uses `_promote_serving_endpoint` to update the served entity in-place. The YAML and the live endpoint diverge over time — that's intentional, not drift.
 - **Streamlit on Databricks Apps requires CORS+XSRF off via env vars**: not flags. `STREAMLIT_SERVER_ENABLE_CORS=false` and `STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false` in `app/app.yaml`. Databricks Apps runtime config: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime.

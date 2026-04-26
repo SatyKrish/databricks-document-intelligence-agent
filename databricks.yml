@@ -47,23 +47,23 @@ variables:
     default: account users
 
 targets:
-  dev:
+  demo:
     default: true
     workspace:
       profile: DEFAULT
-      # Per-user dev path so two engineers' deploys don't stomp each other.
+      # Per-user demo path so two engineers' deploys don't stomp each other.
       # `${workspace.current_user.userName}` resolves to the auth profile's
       # email at deploy time.
-      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/dev
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/demo
     variables:
       catalog: workspace
-      schema: docintel_10k_dev
-      lakebase_instance: docintel-dev-state-v3
+      schema: docintel_10k_demo
+      lakebase_instance: docintel-demo-state-v1
     resources:
       pipelines:
         doc_intel_pipeline:
           development: true
-          # Dev override: triggered runs only, to avoid a continuously-running
+          # Demo override: triggered runs only, to avoid a continuously-running
           # serverless cluster during smoke iterations. Prod inherits
           # continuous: true from resources/foundation/doc_intel.pipeline.yml.
           continuous: false

@@ -1,11 +1,11 @@
 # Operating Runbook — 10-K Analyst
 
-This runbook covers day-2 operations for the deployed dev/prod stacks. For first-time setup follow [`specs/001-doc-intel-10k/quickstart.md`](../specs/001-doc-intel-10k/quickstart.md).
+This runbook covers day-2 operations for the deployed demo/prod stacks. For first-time setup follow [`specs/001-doc-intel-10k/quickstart.md`](../specs/001-doc-intel-10k/quickstart.md).
 
 ## Add a sample filing
 
 1. `databricks fs cp <path>/<TICKER>_10K_<YEAR>.pdf dbfs:/Volumes/<catalog>/<schema>/raw_filings/`
-2. Watch the pipeline: `databricks bundle run -t dev doc_intel_pipeline`
+2. Watch the pipeline: `databricks bundle run -t demo doc_intel_pipeline`
 3. Verify:
    ```sql
    SELECT filename, company_name, fiscal_year, revenue
@@ -35,17 +35,17 @@ If a filing scores below threshold:
 
 ## Roll an agent endpoint version
 
-The Model Serving endpoint follows the UC Model Alias `@dev` (or `@prod`), not a pinned version. To roll forward:
+The Model Serving endpoint follows the UC Model Alias `@demo` (or `@prod`), not a pinned version. To roll forward:
 
 ```bash
-DOCINTEL_CATALOG=<catalog> DOCINTEL_SCHEMA=<schema> python agent/log_and_register.py --target dev
+DOCINTEL_CATALOG=<catalog> DOCINTEL_SCHEMA=<schema> python agent/log_and_register.py --target demo
 ```
 
-This registers a new version and reassigns `@dev`. The serving endpoint will pick the new version on its next traffic refresh (a few minutes). To roll back, use the UC Model Registry UI to re-point the alias to the prior version.
+This registers a new version and reassigns `@demo`. The serving endpoint will pick the new version on its next traffic refresh (a few minutes). To roll back, use the UC Model Registry UI to re-point the alias to the prior version.
 
 ## Inspect CLEARS metrics in MLflow
 
-CI runs `python evals/clears_eval.py --endpoint analyst-agent-dev` after each `dev` deploy. Look for the experiment `/Shared/docintel-clears-<user>`; each run logs:
+CI runs `python evals/clears_eval.py --endpoint analyst-agent-demo` after each `demo` deploy. Look for the experiment `/Shared/docintel-clears-<user>`; each run logs:
 
 - Per-axis metrics: `correctness`, `adherence`, `relevance`, `execution`, `safety`, `latency_p95_ms`
 - Per-category slices: `p2_correctness`, `p3_correctness`
@@ -60,7 +60,7 @@ Failures are logged as a JSON list under the run tag `failures`. The script exit
 | `bundle validate` fails on `ai_parse_document` | Workspace lacks AI Functions GA | Move SQL warehouse to a recent serverless channel |
 | Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
 | Agent endpoint 401 | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and `resources/consumers/analyst.app.yml:user_api_scopes` includes `serving.serving-endpoints` and `sql` |
-| Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (documented destructive-update behavior — see [Databricks Apps deploy docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy)) | Re-apply: `databricks apps update doc-intel-analyst-dev --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read` |
+| Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (documented destructive-update behavior — see [Databricks Apps deploy docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy)) | Re-apply: `databricks apps update doc-intel-analyst-demo --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read` |
 | Streamlit user sees stale UC permissions | OBO token captured at WebSocket open; never refreshes ([Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)) | Reload the page after permission changes |
 | Lakebase tables not writable from deployed App | Local-dev `streamlit run` initialised schema under user identity, not App SP | Connect as App SP and `DROP TABLE feedback, query_logs, conversation_history`; next App run re-creates them under SP. See `app/README.md` |
 | CLEARS Latency axis fails | Re-rank window too large | Reduce candidate window in `agent/retrieval.py` from 25 to 15 |
@@ -83,7 +83,7 @@ To enable OBO end-to-end:
      - iam.access-control:read        # default
      - iam.current-user:read          # default
    ```
-3. Redeploy: `databricks bundle deploy -t dev && databricks bundle run -t dev analyst_app`.
+3. Redeploy: `databricks bundle deploy -t demo && databricks bundle run -t demo analyst_app`.
 4. Verify: bootstrap step 5's scope check now asserts (rather than skipping). Visit the deployed app, ask a question, confirm in audit logs that the agent's UC SQL runs under the user's identity (not the app SP).
 
 The agent-side `auth_policy` declared in `log_and_register.py` uses the **agent-side** scopes (`model-serving`, `vector-search`) per the Model Serving OBO docs — these are different from the App-side scopes above and need no workspace feature flag; they just plumb the per-request user token through the served pyfunc.
@@ -107,7 +107,7 @@ Changing any threshold requires a constitution amendment per the Governance sect
 
 ## v1 baseline
 
-(populate after the first successful `dev` deploy)
+(populate after the first successful `demo` deploy)
 
 ```
 MLflow run ID:   <fill in>
@@ -126,7 +126,7 @@ resolve on a fresh workspace. Each needs a phase-2 step after a prior side effec
    - `resources/consumers/agent.serving.yml` must contain a numeric placeholder
      because DAB serving config may reject UC alias syntax.
    - CI registers a fresh model version and then calls
-     `agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev`
+     `agent/log_and_register.py --target demo --serving-endpoint analyst-agent-demo`
      to update the served entity to the new version.
    - **Fix**: for local deploys, run the same registration command after bundle
      deploy, or bootstrap the endpoint once and let the script advance it.
@@ -142,7 +142,7 @@ resolve on a fresh workspace. Each needs a phase-2 step after a prior side effec
    - The catalog and app attach to the instance before the instance has finished
      coming up. Re-running `bundle deploy` immediately after the first attempt
      usually succeeds since the instance is then ready.
-   - **Fix**: `bundle deploy -t dev` twice on first stand-up, or add a wait task.
+   - **Fix**: `bundle deploy -t demo` twice on first stand-up, or add a wait task.
 
 A clean fresh-workspace bring-up is a single command:
 
@@ -150,15 +150,15 @@ A clean fresh-workspace bring-up is a single command:
 DOCINTEL_CATALOG=<catalog> \
 DOCINTEL_SCHEMA=<schema> \
 DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
-./scripts/bootstrap-dev.sh
+./scripts/bootstrap-demo.sh
 ```
 
 The script implements a **staged deploy**: resources are split into
 `resources/foundation/` (no data deps) and `resources/consumers/` (need
 data). Stage 1 temporarily renames consumer YAMLs to `*.yml.skip` so the
 bundle's `resources/**/*.yml` glob excludes them — foundation deploys
-cleanly. Stage 2 brings up data (sample upload, pipeline run, model
-register, Lakebase ready) and then runs full `bundle deploy`, with all
+cleanly. Stage 2 brings up data (sample upload, pipeline run, VS index
+materialization, model register, Lakebase ready) and then runs full `bundle deploy`, with all
 consumer dependencies satisfied. The previous "errors tolerated on first
 deploy" workaround is gone — both deploys succeed cleanly.
 
@@ -170,10 +170,11 @@ Six-step flow:
    retention conflict — bump the suffix and retry).
 2. **Foundation deploy** — `resources/consumers/*.yml` renamed to
    `*.yml.skip`; `bundle deploy` only touches catalog/schema/volume,
-   pipeline, retention job, Lakebase instance.
+   pipeline, retention job, Lakebase instance, Vector Search endpoint.
 3. **Produce data** — upload synthetic samples, run pipeline, wait for
-   `gold_filing_kpis`, register agent model (no `--serving-endpoint`,
-   endpoint doesn't exist yet), wait for Lakebase to reach `AVAILABLE`.
+   `gold_filing_kpis`, materialize the Vector Search index, register
+   agent model (no `--serving-endpoint`, endpoint doesn't exist yet),
+   wait for Lakebase to reach `AVAILABLE`.
 4. **Consumer deploy** — full `bundle deploy` (foundation idempotent;
    consumers create cleanly because all deps are live).
 5. **App run + UC grants chain** — `bundle run analyst_app`,
