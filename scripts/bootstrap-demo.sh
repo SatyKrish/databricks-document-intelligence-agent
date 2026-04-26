@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Bootstrap a dev workspace end-to-end.
+# Bootstrap a demo workspace end-to-end.
 #
 # Two modes, auto-detected:
 #
 #   FIRST DEPLOY (no serving endpoint yet)
 #     resources/ has chicken-egg dependencies: consumers (serving endpoint,
-#     monitor, app, lakebase catalog, vs endpoint) need foundation data
+#     monitor, app, lakebase catalog, index-refresh job) need foundation data
 #     (registered model, populated KPI table, AVAILABLE Lakebase). DAB
 #     deploys everything in one shot, so we stage:
 #       1. Hide resources/consumers/*.yml → *.yml.skip; bundle deploy
 #          touches only foundation. Trap restores on any exit.
-#       2. Produce data: samples → pipeline → wait for KPIs → register
-#          model → wait for Lakebase AVAILABLE.
+#       2. Produce data: samples → pipeline → wait for KPIs → materialize
+#          VS index → register model → wait for Lakebase AVAILABLE.
 #       3. Restore consumer YAMLs; bundle deploy full bundle. All deps
 #          satisfied; consumers create cleanly.
 #
@@ -28,11 +28,11 @@
 #
 # Required env vars:
 #   DOCINTEL_CATALOG       e.g. workspace
-#   DOCINTEL_SCHEMA        e.g. docintel_10k_dev
+#   DOCINTEL_SCHEMA        e.g. docintel_10k_demo
 #   DOCINTEL_WAREHOUSE_ID  SQL warehouse id (used by wait_for_kpis + smoke)
 #
 # Optional:
-#   DOCINTEL_TARGET            bundle target (default: dev)
+#   DOCINTEL_TARGET            bundle target (default: demo)
 #   DOCINTEL_ANALYST_GROUP     UC group for grants (default: "account users")
 #   DOCINTEL_WAIT_SECONDS      poll timeout for KPI table (default: 600)
 #   DOCINTEL_LAKEBASE_TIMEOUT  poll timeout for Lakebase (default: 600)
@@ -40,6 +40,9 @@
 #   DOCINTEL_FORCE_LOCK        set to 1 to pass --force-lock (use ONLY when a
 #                              prior deploy crashed and left a stale lock —
 #                              not a normal-flow flag).
+#   DOCINTEL_EMBEDDING_ENDPOINT
+#                              embedding endpoint for first-run VS index
+#                              materialization (default: databricks-bge-large-en)
 
 set -euo pipefail
 
@@ -47,13 +50,14 @@ log() { echo "[bootstrap] $*" >&2; }
 die() { log "error: $*"; exit 1; }
 
 : "${DOCINTEL_CATALOG:?must be set (e.g. workspace)}"
-: "${DOCINTEL_SCHEMA:?must be set (e.g. docintel_10k_dev)}"
+: "${DOCINTEL_SCHEMA:?must be set (e.g. docintel_10k_demo)}"
 : "${DOCINTEL_WAREHOUSE_ID:?must be set}"
 
-TARGET="${DOCINTEL_TARGET:-dev}"
+TARGET="${DOCINTEL_TARGET:-demo}"
 ANALYST_GROUP="${DOCINTEL_ANALYST_GROUP:-account users}"
 WAIT_SECONDS="${DOCINTEL_WAIT_SECONDS:-600}"
 LAKEBASE_TIMEOUT="${DOCINTEL_LAKEBASE_TIMEOUT:-600}"
+EMBEDDING_ENDPOINT="${DOCINTEL_EMBEDDING_ENDPOINT:-databricks-bge-large-en}"
 ENDPOINT="analyst-agent-${TARGET}"
 APP_NAME="doc-intel-analyst-${TARGET}"
 KPI_TABLE="${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}.gold_filing_kpis"
@@ -216,7 +220,7 @@ if [[ "$MODE" == "first" ]]; then
     mv "$f" "$f.skip"
   done
 
-  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" "${DEPLOY_FLAGS[@]}" || \
+  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" ${DEPLOY_FLAGS[@]+"${DEPLOY_FLAGS[@]}"} || \
     die "stage-1 deploy failed (foundation should be self-contained — investigate)"
 
   restore_consumers
@@ -228,19 +232,34 @@ if [[ "$MODE" == "first" ]]; then
     die "pipeline run failed — inspect SDP UI before retrying"
   "$PYTHON" scripts/wait_for_kpis.py --min-rows 1 --timeout "$WAIT_SECONDS" || \
     die "timed out waiting for $KPI_TABLE"
+
+  # Materialize the VS index BEFORE agent registration: the agent's auth_policy
+  # declares the VS index as a UC resource (DatabricksVectorSearchIndex), and
+  # MLflow validates its existence at create_model_version time. The VS
+  # endpoint is in foundation/ (created by stage-1 deploy), but the index is
+  # always created at runtime by sync_index.py. Stage-2's index_refresh job
+  # is too late.
+  log "  creating Vector Search index ${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}.filings_summary_idx"
+  "$PYTHON" jobs/index_refresh/sync_index.py \
+    --endpoint "docintel-${TARGET}" \
+    --index "${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}.filings_summary_idx" \
+    --source-table "${DOCINTEL_CATALOG}.${DOCINTEL_SCHEMA}.gold_filing_sections_indexable" \
+    --primary-key section_uid \
+    --embedding-endpoint "$EMBEDDING_ENDPOINT" || \
+    die "VS index creation failed (sync_index.py)"
+
   "$PYTHON" agent/log_and_register.py --target "$TARGET" || \
     die "agent registration failed"
   wait_for_lakebase_available
 
   log "step 3/6: stage-2 deploy (full bundle — consumers join the foundation)"
-  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" "${DEPLOY_FLAGS[@]}" || \
+  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" ${DEPLOY_FLAGS[@]+"${DEPLOY_FLAGS[@]}"} || \
     die "stage-2 deploy failed; check logs"
 
   # The index_refresh job is created by stage-2 deploy and is `table_update`-
   # triggered. Triggers do not fire retroactively on the rows the pipeline
-  # produced in stage 2, so we have to materialize the Vector Search index
-  # explicitly the first time. sync_index.py is create-if-missing/sync-if-
-  # exists, so this is idempotent on subsequent runs.
+  # produced before the job existed, so run it once after deployment as an
+  # idempotent smoke of the bundled job path.
   log "step 3.5/6: triggering initial Vector Search index materialization"
   databricks bundle run -t "$TARGET" "${VAR_FLAGS[@]}" index_refresh || \
     log "  warn: index_refresh failed; the table_update trigger will retry on the next pipeline run"
@@ -248,7 +267,7 @@ if [[ "$MODE" == "first" ]]; then
 else
   # ─── Steady-state path: single full deploy + in-place data refresh ────────
   log "step 1/6: full bundle deploy (steady-state — consumers already exist)"
-  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" "${DEPLOY_FLAGS[@]}" || \
+  databricks bundle deploy -t "$TARGET" "${VAR_FLAGS[@]}" ${DEPLOY_FLAGS[@]+"${DEPLOY_FLAGS[@]}"} || \
     die "bundle deploy failed; if a prior deploy was interrupted, set DOCINTEL_FORCE_LOCK=1 and retry"
 
   log "step 2/6: refreshing data + repointing serving endpoint"

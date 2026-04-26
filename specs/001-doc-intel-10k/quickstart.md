@@ -1,6 +1,6 @@
 # Quickstart: Deploy and Test the 10-K Analyst
 
-Goal: from a clean clone, stand up the entire stack on the Databricks `dev` target and verify P1, P2, P3 acceptance scenarios in 15–25 minutes.
+Goal: from a clean clone, stand up the entire stack on the Databricks `demo` target and verify P1, P2, P3 acceptance scenarios in 15–25 minutes.
 
 ## Prerequisites
 
@@ -11,30 +11,30 @@ Goal: from a clean clone, stand up the entire stack on the Databricks `dev` targ
 
 ## 1. Configure the bundle
 
-The `dev` target's defaults (in `databricks.yml`) are `catalog=workspace`, `schema=docintel_10k_dev`. Override per the workspace via env vars or `--var`:
+The `demo` target's defaults (in `databricks.yml`) are `catalog=workspace`, `schema=docintel_10k_demo`. Override per the workspace via env vars or `--var`:
 
 ```bash
 cd databricks
-databricks bundle validate --strict -t dev
+databricks bundle validate --strict -t demo
 ```
 
 If validate prints no errors, every resource YAML is schema-correct.
 
-## 2. Stand up dev (staged deploy)
+## 2. Stand up demo (staged deploy)
 
 ```bash
 DOCINTEL_CATALOG=workspace \
-DOCINTEL_SCHEMA=docintel_10k_dev \
+DOCINTEL_SCHEMA=docintel_10k_demo \
 DOCINTEL_WAREHOUSE_ID=<your-warehouse-id> \
-./scripts/bootstrap-dev.sh
+./scripts/bootstrap-demo.sh
 ```
 
 The script implements a 6-step staged deploy:
 
 1. Detect & clean orphan resources from prior failed runs.
-2. **Stage 1**: deploy `resources/foundation/` only (catalog/schema/volume, pipeline, retention job, Lakebase instance) — consumer YAMLs are temp-renamed to `*.yml.skip`.
-3. **Produce data**: upload synthetic samples, run pipeline, register agent model, wait for Lakebase to reach `AVAILABLE`.
-4. **Stage 2**: full `bundle deploy` — consumers (serving endpoint, monitor, VS endpoint, index-refresh job, app, dashboard, Lakebase catalog) attach to the live foundation.
+2. **Stage 1**: deploy `resources/foundation/` only (catalog/schema/volume, pipeline, retention job, Lakebase instance, VS endpoint) — consumer YAMLs are temp-renamed to `*.yml.skip`.
+3. **Produce data**: upload synthetic samples, run pipeline, materialize the VS index, register agent model, wait for Lakebase to reach `AVAILABLE`.
+4. **Stage 2**: full `bundle deploy` — consumers (serving endpoint, monitor, index-refresh job, app, dashboard, Lakebase catalog) attach to the live foundation. The VS endpoint is deployed in stage 1, and the bootstrap materializes the VS index before agent registration.
 5. `bundle run analyst_app`; UC grants chain (`USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE`).
 6. Smoke check on the analyst endpoint.
 
@@ -48,7 +48,7 @@ The bootstrap script already uploaded `samples/{ACME,BETA,GAMMA,garbage}_10K_202
 SELECT filename, company_name, fiscal_year, revenue, ebitda,
        size(top_risks) AS num_risks,
        size(segment_revenue) AS num_segments
-  FROM workspace.docintel_10k_dev.gold_filing_kpis
+  FROM workspace.docintel_10k_demo.gold_filing_kpis
  ORDER BY filename;
 ```
 
@@ -56,13 +56,13 @@ Expect 4 rows. ACME/BETA/GAMMA each show non-null revenue (`94.2`, `212.0`, `305
 
 ## 4. Verify P2 — ask the corpus
 
-Open the deployed App URL (workspace UI → Apps → `doc-intel-analyst-dev`). Ask:
+Open the deployed App URL (workspace UI → Apps → `doc-intel-analyst-demo`). Ask:
 
 > What were the top 3 risk factors disclosed by ACME in their FY24 10-K?
 
 Expect: a grounded answer naming ≥3 risks (macroeconomic conditions, competitive pressure in AI, supply chain concentration), each with a citation chip linking back to `ACME_10K_2024.pdf` / `Risk`. Submit thumbs-up; refresh; the feedback row appears in `lakebase.feedback`. Confirms SC-002, SC-007.
 
-To bring real EDGAR filings online instead of the synthetic samples, see `samples/README.md` — the volume accepts any `*_10K_*.pdf` and the pipeline reacts via Auto Loader (`continuous: true` in prod, `false` in dev).
+To bring real EDGAR filings online instead of the synthetic samples, see `samples/README.md` — the volume accepts any `*_10K_*.pdf` and the pipeline reacts via Auto Loader (`continuous: true` in prod, `false` in demo).
 
 ## 5. Verify P3 — cross-company
 
@@ -76,9 +76,9 @@ Expect: a markdown table with one row per company, segment-revenue values matchi
 
 ```bash
 DOCINTEL_CATALOG=workspace \
-DOCINTEL_SCHEMA=docintel_10k_dev \
+DOCINTEL_SCHEMA=docintel_10k_demo \
 .venv/bin/python evals/clears_eval.py \
-  --endpoint analyst-agent-dev \
+  --endpoint analyst-agent-demo \
   --dataset evals/dataset.jsonl
 ```
 
@@ -87,10 +87,10 @@ Exit 0 iff every CLEARS axis meets thresholds (C≥0.8, L p95≤8s, E≥0.95, A�
 ## 7. Tear down
 
 ```bash
-databricks bundle destroy -t dev --auto-approve
+databricks bundle destroy -t demo --auto-approve
 ```
 
-Note: the Lakebase instance enters a soft-delete state for ~7 days during which its name is reserved. To redeploy quickly, bump `lakebase_instance` in `databricks.yml` (e.g., `docintel-dev-state-v4`) before re-running the bootstrap.
+Note: the Lakebase instance enters a soft-delete state for ~7 days during which its name is reserved. To redeploy quickly, bump `lakebase_instance` in `databricks.yml` (e.g., `docintel-demo-state-v4`) before re-running the bootstrap.
 
 ## Troubleshooting
 

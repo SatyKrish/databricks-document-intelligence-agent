@@ -132,7 +132,7 @@ def _promote_serving_endpoint(endpoint_name: str, model_name: str, version: str)
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--target", required=True, choices=["dev", "prod"])
+    p.add_argument("--target", required=True, choices=["demo", "prod"])
     p.add_argument("--serving-endpoint", help="Existing serving endpoint to update to the new model version")
     args = p.parse_args()
 

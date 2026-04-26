@@ -13,16 +13,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Databricks CLI
         run: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
-      - name: Validate bundle (dev)
+      - name: Validate bundle (demo)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DOCINTEL_WAREHOUSE_ID: ${{ vars.DOCINTEL_WAREHOUSE_ID }}
-        run: databricks bundle validate --strict -t dev --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID"
+        run: databricks bundle validate --strict -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID"
 
-  deploy-dev:
+  deploy-demo:
     # CI assumes steady-state: the first-ever bring-up of a workspace must be
-    # done locally via `./scripts/bootstrap-dev.sh`, which handles the
+    # done locally via `./scripts/bootstrap-demo.sh`, which handles the
     # foundation/consumers staging and waits for Lakebase AVAILABLE. After
     # that initial bring-up, every push to main runs a full bundle deploy
     # against the now-existing resources — no temp-rename trick (DAB would
@@ -52,7 +52,7 @@ jobs:
         # wait_for_kpis / log_and_register use. Without --var, the bundle
         # falls back to its `lookup: warehouse: Serverless Starter Warehouse`
         # default and silently picks a different ID.
-        run: databricks bundle deploy -t dev --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID"
+        run: databricks bundle deploy -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID"
 
       - name: Wait for Lakebase instance to be AVAILABLE
         # Lakebase already exists in steady-state but a config change can
@@ -61,7 +61,7 @@ jobs:
         run: |
           python -c "
 import json, os, sys, time, subprocess
-name = os.environ.get('LAKEBASE_NAME') or 'docintel-dev-state-v3'
+name = os.environ.get('LAKEBASE_NAME') or 'docintel-demo-state-v1'
 deadline = time.time() + 600
 while True:
     out = subprocess.run(['databricks','api','get','/api/2.0/database/instances','--output','json'],
@@ -79,7 +79,7 @@ while True:
     time.sleep(15)
 "
         env:
-          LAKEBASE_NAME: ${{ vars.DOCINTEL_LAKEBASE_NAME || 'docintel-dev-state-v3' }}
+          LAKEBASE_NAME: ${{ vars.DOCINTEL_LAKEBASE_NAME || 'docintel-demo-state-v1' }}
 
       - name: Refresh data — upload samples, run pipeline, register new model version
         run: |
@@ -88,11 +88,11 @@ while True:
               "dbfs:/Volumes/${DOCINTEL_CATALOG}/${DOCINTEL_SCHEMA}/raw_filings/" \
               --overwrite
           done
-          databricks bundle run -t dev --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" doc_intel_pipeline
+          databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" doc_intel_pipeline
           python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
           # --serving-endpoint repoints the existing endpoint to the new
           # model version in-place (steady-state idempotent operation).
-          python agent/log_and_register.py --target dev --serving-endpoint analyst-agent-dev
+          python agent/log_and_register.py --target demo --serving-endpoint analyst-agent-demo
 
       - name: Apply UC grants (catalog + schema; not DAB-supported)
         # UC requires the full chain: USE_CATALOG → USE_SCHEMA → SELECT/EXECUTE.
@@ -112,7 +112,7 @@ while True:
         # Databricks Apps deploy docs:
         # https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy
         # `bundle deploy` alone uploads code but doesn't apply config/restart.
-        run: databricks bundle run -t dev --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" analyst_app
+        run: databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" analyst_app
 
       - name: Verify OBO scopes survived deploy
         # `bundle run` may wipe user_api_scopes (documented destructive-update
@@ -120,7 +120,7 @@ while True:
         # are not declared (workspace feature off).
         run: |
           if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml; then
-            databricks apps get doc-intel-analyst-dev --output json > /tmp/app.json
+            databricks apps get doc-intel-analyst-demo --output json > /tmp/app.json
             python -c "
 import json
 app = json.load(open('/tmp/app.json'))
@@ -134,4 +134,4 @@ assert not missing, f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)
           fi
 
       - name: CLEARS evaluation gate
-        run: python evals/clears_eval.py --endpoint analyst-agent-dev --dataset evals/dataset.jsonl
+        run: python evals/clears_eval.py --endpoint analyst-agent-demo --dataset evals/dataset.jsonl

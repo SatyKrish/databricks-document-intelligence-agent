@@ -24,6 +24,6 @@ env:
 
   # Resolved at runtime from the resource bindings declared in
   # resources/consumers/analyst.app.yml. The bindings are target-aware
-  # (analyst-agent-${bundle.target}) so dev and prod stay isolated.
+  # (analyst-agent-${bundle.target}) so demo and prod stay isolated.
   - name: DOCINTEL_AGENT_ENDPOINT
     valueFrom: agent-endpoint

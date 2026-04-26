@@ -14,16 +14,16 @@ Source for the Databricks App `doc-intel-analyst-${target}`. Streamlit chat UI o
 ## Running deployed (canonical)
 
 ```bash
-databricks bundle deploy -t dev
-databricks bundle run -t dev analyst_app
-# Open the App URL from the workspace UI ("Apps" → doc-intel-analyst-dev)
+databricks bundle deploy -t demo
+databricks bundle run -t demo analyst_app
+# Open the App URL from the workspace UI ("Apps" → doc-intel-analyst-demo)
 ```
 
 The first request creates the `conversation_history`, `query_logs`, and `feedback` tables in Lakebase. Tables are owned by the App's bound service principal (auto-granted `CAN_CONNECT_AND_CREATE` per `resources/consumers/analyst.app.yml`).
 
 ## Running locally
 
-For iteration speed you may want to run the Streamlit app on your laptop against a deployed dev workspace. **Authenticate as the App's bound service principal** so Lakebase schema init produces the same ownership as the deployed App:
+For iteration speed you may want to run the Streamlit app on your laptop against a deployed demo workspace. **Authenticate as the App's bound service principal** so Lakebase schema init produces the same ownership as the deployed App:
 
 ```bash
 export DATABRICKS_HOST=https://<your-workspace>.cloud.databricks.com
@@ -32,11 +32,11 @@ export DATABRICKS_CLIENT_SECRET=<app-sp-secret>
 
 # Lakebase env vars (PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE) come from
 # the App resource binding when deployed. Locally, derive them with:
-eval "$(databricks apps get doc-intel-analyst-dev \
+eval "$(databricks apps get doc-intel-analyst-demo \
   --output json | jq -r '.resources[] | select(.name=="docintel-lakebase") | .database | @sh "
 export PGHOST=\(.host) PGPORT=\(.port) PGUSER=\(.username) PGPASSWORD=\(.password) PGDATABASE=\(.database)"')"
 
-export DOCINTEL_AGENT_ENDPOINT=analyst-agent-dev
+export DOCINTEL_AGENT_ENDPOINT=analyst-agent-demo
 streamlit run app/app.py
 ```
 
@@ -58,4 +58,4 @@ The app forwards each user's `x-forwarded-access-token` header to the agent serv
 
 **Streamlit gotcha** (per the [Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)): the OBO token is captured at the initial HTTP request; the connection then upgrades to WebSocket and the token never refreshes. If a user's UC permissions change mid-session, ask them to reload the page.
 
-**Local-dev caveat**: `st.context.headers` won't have `x-forwarded-access-token` when running `streamlit run` outside the Databricks Apps reverse proxy, so the OBO helper falls back to the SP client. That's fine for development — UC ACLs in dev workspaces are usually permissive — but verify against deployed dev before assuming OBO works.
+**Local-dev caveat**: `st.context.headers` won't have `x-forwarded-access-token` when running `streamlit run` outside the Databricks Apps reverse proxy, so the OBO helper falls back to the SP client. That's fine for development — UC ACLs in demo workspaces are usually permissive — but verify against deployed demo before assuming OBO works.

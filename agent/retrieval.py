@@ -22,7 +22,7 @@ from agent._obo import user_workspace
 CATALOG = os.environ["DOCINTEL_CATALOG"]
 SCHEMA = os.environ["DOCINTEL_SCHEMA"]
 INDEX_FQN = f"{CATALOG}.{SCHEMA}.filings_summary_idx"
-ENDPOINT = os.environ.get("DOCINTEL_VS_ENDPOINT", f"docintel-{os.environ.get('DOCINTEL_TARGET', 'dev')}")
+ENDPOINT = os.environ.get("DOCINTEL_VS_ENDPOINT", f"docintel-{os.environ.get('DOCINTEL_TARGET', 'demo')}")
 RERANK_ENDPOINT = os.environ.get("DOCINTEL_RERANK_ENDPOINT", "databricks-bge-rerank-v2")
 
 _RETURN_COLS = ["section_uid", "filename", "section_label", "original_label", "summary", "quality_score"]

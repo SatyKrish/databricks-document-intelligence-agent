@@ -1,12 +1,12 @@
 """Poll until gold_filing_kpis has at least N rows, or time out.
 
-Used by both `scripts/bootstrap-dev.sh` (post-pipeline-trigger) and the GitHub
+Used by both `scripts/bootstrap-demo.sh` (post-pipeline-trigger) and the GitHub
 Actions deploy workflow (post-sample-upload). Centralized here so both paths
 share the same SQL Statement Execution logic.
 
 Required env:
     DOCINTEL_CATALOG       e.g. workspace
-    DOCINTEL_SCHEMA        e.g. docintel_10k_dev
+    DOCINTEL_SCHEMA        e.g. docintel_10k_demo
     DOCINTEL_WAREHOUSE_ID  SQL warehouse to run the count query
 
 CLI:

@@ -21,11 +21,11 @@ python -m venv .venv
 
 ```bash
 .venv/bin/python -m pytest agent/tests/ -q     # 18 unit tests
-databricks bundle validate --strict -t dev     # YAML schema + interpolation
-bash -n scripts/bootstrap-dev.sh               # bash syntax
+databricks bundle validate --strict -t demo     # YAML schema + interpolation
+bash -n scripts/bootstrap-demo.sh               # bash syntax
 ```
 
-End-to-end is exercised by `./scripts/bootstrap-dev.sh` against a real Databricks workspace; see [`specs/001-doc-intel-10k/quickstart.md`](./specs/001-doc-intel-10k/quickstart.md).
+End-to-end is exercised by `./scripts/bootstrap-demo.sh` against a real Databricks workspace; see [`specs/001-doc-intel-10k/quickstart.md`](./specs/001-doc-intel-10k/quickstart.md).
 
 ## Working with the spec-kit
 

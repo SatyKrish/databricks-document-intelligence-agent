@@ -71,7 +71,7 @@ It also demonstrates a development workflow: **Spec-Kit** for spec-driven design
 
 **Key idea — "parse once, extract many":** PDFs are expensive to parse. Silver runs `ai_parse_document` exactly once per file and stores the structured result as a `VARIANT`. Everything downstream — classification, KPI extraction, summarization, quality scoring — reads the parsed output, never the raw bytes. This is a non-negotiable constitution principle.
 
-**Triggering**: prod runs the pipeline in `continuous: true` mode so Auto Loader (`read_files`) reacts to new PDFs in the volume automatically. Dev overrides to `continuous: false` to avoid a 24/7 cluster during smoke iterations. See `resources/foundation/doc_intel.pipeline.yml` and the dev override block in `databricks.yml`.
+**Triggering**: prod runs the pipeline in `continuous: true` mode so Auto Loader (`read_files`) reacts to new PDFs in the volume automatically. Demo overrides to `continuous: false` to avoid a 24/7 cluster during smoke iterations. See `resources/foundation/doc_intel.pipeline.yml` and the demo override block in `databricks.yml`.
 
 ### Vector Search bridges data and agent
 
@@ -91,7 +91,7 @@ It also demonstrates a development workflow: **Spec-Kit** for spec-driven design
    "Quality before retrieval."
 ```
 
-**Ownership note**: DAB manages the Vector Search **endpoint** (`resources/consumers/filings_index.yml`) and the index-refresh **job** (`resources/consumers/index_refresh.job.yml`). The **index** itself isn't yet a DAB-managed resource type as of CLI 0.298 — `jobs/index_refresh/sync_index.py` creates the Delta-Sync index on first run and triggers a sync on subsequent runs. That's why the bootstrap script's stage-2 deploy creates the endpoint + job, and the job's first execution materializes the actual index.
+**Ownership note**: DAB manages the Vector Search **endpoint** (`resources/foundation/filings_index.yml`) and the index-refresh **job** (`resources/consumers/index_refresh.job.yml`). The **index** itself isn't yet a DAB-managed resource type as of CLI 0.298 — `jobs/index_refresh/sync_index.py` creates the Delta-Sync index on first run and triggers a sync on subsequent runs. The endpoint lives in foundation so first-deploy bootstrap can materialize the index before `agent/log_and_register.py` logs the model auth policy that references it.
 
 ### Agent has two paths, one endpoint
 
@@ -129,7 +129,7 @@ It also demonstrates a development workflow: **Spec-Kit** for spec-driven design
               └──────────────────────┘
 ```
 
-The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served behind an **AI Gateway** (rate limiting per-user, usage tracking, inference-table audit). Identity passthrough is implemented at the *App layer* when the workspace has Databricks Apps user-token passthrough enabled: the Streamlit app extracts the user's `x-forwarded-access-token` header and constructs a user-scoped `WorkspaceClient`. The served model is OBO-ready via MLflow `auth_policy` and Model Serving user credentials. If app-level passthrough is not enabled, the app falls back to service-principal auth and the repo must be treated as a reference/dev deployment, not a production row-level-security deployment. See [`../SECURITY.md`](../SECURITY.md) and [`../app/README.md`](../app/README.md).
+The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served behind an **AI Gateway** (rate limiting per-user, usage tracking, inference-table audit). Identity passthrough is implemented at the *App layer* when the workspace has Databricks Apps user-token passthrough enabled: the Streamlit app extracts the user's `x-forwarded-access-token` header and constructs a user-scoped `WorkspaceClient`. The served model is OBO-ready via MLflow `auth_policy` and Model Serving user credentials. If app-level passthrough is not enabled, the app falls back to service-principal auth and the repo must be treated as a reference/demo deployment, not a production row-level-security deployment. See [`../SECURITY.md`](../SECURITY.md) and [`../app/README.md`](../app/README.md).
 
 ### Runtime stack
 
@@ -150,7 +150,7 @@ The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served beh
                   ▼                 ▼
    ┌────────────────────────┐  ┌────────────────────────┐
    │ Model Serving endpoint │  │  Lakebase Postgres     │
-   │ "analyst-agent-dev"    │  │  ─────────────────      │
+   │ "analyst-agent-demo"    │  │  ─────────────────      │
    │  (CPU, scales to 0)    │  │  conversation_history   │
    │                        │  │  query_logs             │
    │  + AI Gateway:         │  │  feedback               │
@@ -168,7 +168,7 @@ The agent is an `mlflow.pyfunc` model registered in Unity Catalog and served beh
    user's identity. The agent-side MLflow auth policy and Model Serving
    OBO credentials let downstream calls run as the user. If the app-side
    feature is unavailable, the bootstrap script prints an explicit warning
-   and the deployment remains reference/dev only.
+   and the deployment remains reference/demo only.
 ```
 
 **Why Postgres for state?** Delta tables are great for analytics but bad at "insert one tiny row per chat turn at high frequency." Lakebase is Databricks's managed Postgres — same governance, right tool for the job.
@@ -212,13 +212,13 @@ This repo combines three things: Spec-Kit for spec-driven design, Databricks Ass
 | III | **Declarative over imperative** | SDP SQL pipelines, Lakeflow Jobs, DAB resources — no production notebooks |
 | IV | **Quality before retrieval** | 5-dim rubric scores every section; only ≥22/30 reach the index. Embed `summary`, not raw text |
 | V | **Eval-gated agents** | MLflow CLEARS scores must clear thresholds before any deploy is considered complete |
-| VI | **Reproducible deploys** | `databricks bundle deploy -t <env>` recreates the entire stack; `dev` and `prod` parity enforced |
+| VI | **Reproducible deploys** | `databricks bundle deploy -t <env>` recreates the entire stack; `demo` and `prod` parity enforced |
 
 When you read `specs/001-doc-intel-10k/plan.md` you'll see a "Constitution Check" gate that maps each design decision back to the principle it satisfies. When you read `specs/001-doc-intel-10k/tasks.md` you'll see how each task derives from the plan, and how user-stories (P1, P2, P3) are independently demoable.
 
 ### Pillar 2 — Databricks Asset Bundles + the Claude Code skill suite
 
-[**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe most of the workspace state as YAML. One root `databricks.yml` declares variables and targets (`dev`, `prod`); `resources/**/*.yml` declares each resource (pipeline, jobs, Vector Search endpoint, index-refresh job, serving endpoint, app, monitor, dashboard, Lakebase instance + catalog). `databricks bundle deploy -t dev` reconciles workspace state to YAML. The two non-DAB-managed pieces — the Vector Search **index** itself and the registered **model version** — are produced at runtime by `jobs/index_refresh/sync_index.py` and `agent/log_and_register.py` respectively, which the bootstrap script orchestrates.
+[**Databricks Asset Bundles**](https://docs.databricks.com/aws/en/dev-tools/bundles/) (DABs) describe most of the workspace state as YAML. One root `databricks.yml` declares variables and targets (`demo`, `prod`); `resources/**/*.yml` declares each resource (pipeline, jobs, Vector Search endpoint, index-refresh job, serving endpoint, app, monitor, dashboard, Lakebase instance + catalog). `databricks bundle deploy -t demo` reconciles workspace state to YAML. The two non-DAB-managed pieces — the Vector Search **index** itself and the registered **model version** — are produced at runtime by `jobs/index_refresh/sync_index.py` and `agent/log_and_register.py` respectively, which the bootstrap script orchestrates.
 
 This repo was built with Databricks-specific Claude Code skill bundles. Those bundles are distributed by Databricks via the CLI / Claude Code plugin channel and **are not vendored in this open-source tree** — install them locally if you have access, or reference the canonical Databricks docs (mapping in [`../CONTRIBUTING.md`](../CONTRIBUTING.md)).
 
@@ -277,7 +277,7 @@ DABs deploy *everything in one shot*. But our resources have a chicken-and-egg p
    ▶ Single `bundle deploy` → 4+ errors on a fresh workspace.
 ```
 
-The fix is a **staged deploy** orchestrated by `scripts/bootstrap-dev.sh`. Resources are split into two directories by data dependency:
+The fix is a **staged deploy** orchestrated by `scripts/bootstrap-demo.sh`. Resources are split into two directories by data dependency:
 
 ```
    resources/
@@ -285,12 +285,12 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-dev.sh`. Resou
    │   ├── catalog.yml             (schema + volume + grants)
    │   ├── doc_intel.pipeline.yml
    │   ├── retention.job.yml
+   │   ├── filings_index.yml       (VS endpoint)
    │   └── lakebase_instance.yml
    │
    └── consumers/         ← need foundation to be RUNNING and producing data
        ├── agent.serving.yml     (needs registered model version)
        ├── kpi_drift.yml         (needs gold_filing_kpis table)
-       ├── filings_index.yml     (VS endpoint)
        ├── index_refresh.job.yml (needs source table)
        ├── analyst.app.yml       (needs Lakebase + agent endpoint)
        ├── usage.dashboard.yml
@@ -337,7 +337,7 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-dev.sh`. Resou
 
 **Why two modes?** DAB tracks resource state; if you run the temp-rename trick against an *existing* deployment, DAB sees the consumer YAMLs as removed and plans to **delete** the serving endpoint, app, monitor, etc. Safe-ish on a fresh workspace; destructive in steady-state. The script detects mode and does the right thing.
 
-CI (`.github/workflows/deploy.yml`) assumes steady-state — the first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-dev.sh`. After that, every push to `main` runs the steady-state path: full `bundle deploy` → refresh data → repoint serving endpoint → grants → CLEARS gate.
+CI (`.github/workflows/deploy.yml`) assumes steady-state — the first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-demo.sh`. After that, every push to `main` runs the steady-state path: full `bundle deploy` → refresh data → repoint serving endpoint → grants → CLEARS gate.
 
 For the per-step procedure and known failure modes, see [`runbook.md` § Known deploy ordering gaps](./runbook.md#known-deploy-ordering-gaps-discovered-in-the-2026-04-24-smoke-test).
 

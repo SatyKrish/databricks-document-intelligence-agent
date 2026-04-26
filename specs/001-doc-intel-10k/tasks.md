@@ -26,8 +26,8 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 ## Phase 1: Setup (Shared Infrastructure)
 
 - [ ] T001 Verify `databricks` CLI ≥ 0.260 is installed and `databricks auth profiles` shows a working profile; if missing, follow the official Databricks CLI installation docs
-- [x] T002 Create the bundle skeleton at `databricks.yml` with `bundle.name: doc-intel-10k`, `targets: {dev, prod}`, variables `catalog`, `schema`, `workspace_host`, `service_principal_id` (prod only), `embedding_model_endpoint_name`, `quality_threshold` (default 22), `top_k` (default 5)
-- [x] T003 [P] Add `.github/workflows/deploy.yml` running `databricks bundle validate -t dev` on PR and `databricks bundle deploy -t dev` + `python evals/clears_eval.py` on push to `main`
+- [x] T002 Create the bundle skeleton at `databricks.yml` with `bundle.name: doc-intel-10k`, `targets: {demo, prod}`, variables `catalog`, `schema`, `workspace_host`, `service_principal_id` (prod only), `embedding_model_endpoint_name`, `quality_threshold` (default 22), `top_k` (default 5)
+- [x] T003 [P] Add `.github/workflows/deploy.yml` running `databricks bundle validate -t demo` on PR and `databricks bundle deploy -t demo` + `python evals/clears_eval.py` on push to `main`
 - [x] T004 [P] Create empty `pipelines/sql/`, `agent/`, `app/`, `evals/`, `resources/{pipelines,jobs,vector_search,serving,lakebase,monitors,dashboards,apps}/` directories with `.gitkeep` files
 - [x] T005 [P] Add `agent/requirements.txt` (`mlflow>=2.20`, `databricks-agents`, `databricks-vectorsearch`, `databricks-sdk`) and `app/requirements.txt` (`streamlit`, `databricks-sdk`, `psycopg[binary]`)
 
@@ -83,18 +83,18 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 
 ### Implementation for US2
 
-- [x] T020 [P] [US2] Define the Vector Search endpoint and Delta-Sync index in `resources/vector_search/filings_index.yml` over `${var.catalog}.${var.schema}.gold_filing_sections` filtered `WHERE embed_eligible = true`, embedding column `summary`, embedding model from `${var.embedding_model_endpoint_name}` (depends on T013)
-- [x] T021 [P] [US2] Define the index-refresh Lakeflow Job in `resources/jobs/index_refresh.job.yml` with table-update trigger on `gold_filing_sections`, single SQL task running `SYNC INDEX ${var.catalog}.${var.schema}.filings_summary_idx` (depends on T020)
+- [x] T020 [P] [US2] Define the Vector Search endpoint in `resources/foundation/filings_index.yml`; the Delta-Sync index over `${var.catalog}.${var.schema}.gold_filing_sections_indexable` is created by `jobs/index_refresh/sync_index.py` because DAB does not manage Vector Search indexes directly (depends on T013)
+- [x] T021 [P] [US2] Define the index-refresh Lakeflow Job in `resources/consumers/index_refresh.job.yml` with a table-update trigger on `gold_filing_sections_indexable` and a Python task that creates/syncs `${var.catalog}.${var.schema}.filings_summary_idx` (depends on T020)
 - [x] T022 [US2] Implement `agent/retrieval.py`: `hybrid_retrieve(question, top_k=25, filters=None)` calling Vector Search with `query_type='HYBRID'`, then `mosaic_rerank(question, candidates, top_k=5)`; returns list of citation dicts matching `agent-response.json` (depends on T020; tests T018 must fail first)
 - [x] T023 [US2] Implement `agent/tools.py`: a UC Function tool wrapping `SELECT * FROM gold_filing_kpis WHERE filename = :filename` for the agent to access structured KPIs deterministically
 - [x] T024 [US2] Implement `agent/analyst_agent.py`: a `mlflow.pyfunc` model class implementing the Mosaic AI Agent Framework chat protocol; uses `retrieval.hybrid_retrieve` for grounding, calls a foundation model endpoint to generate the answer, returns the schema in `contracts/agent-response.json` (depends on T022, T023)
-- [x] T025 [US2] Implement `agent/log_and_register.py`: `mlflow.pyfunc.log_model(...)`, `mlflow.register_model(...)` to UC at `${var.catalog}.${var.schema}.analyst_agent`; assign UC Model Alias `@dev` (and later `@prod`) to the freshly registered version so Model Serving in T026 follows the alias rather than a frozen version (depends on T024)
+- [x] T025 [US2] Implement `agent/log_and_register.py`: `mlflow.pyfunc.log_model(...)`, `mlflow.register_model(...)` to UC at `${var.catalog}.${var.schema}.analyst_agent`; assign UC Model Alias `@demo` (and later `@prod`) to the freshly registered version so Model Serving in T026 follows the alias rather than a frozen version (depends on T024)
 - [x] T026 [US2] Define the Model Serving endpoint in `resources/consumers/agent.serving.yml`: CPU instance, served entity = `${var.catalog}.${var.schema}.analyst_agent`, AI Gateway with rate limit + audit enabled (depends on T025)
 - [x] T027 [US2] Implement `app/app.py` (Streamlit): chat input, calls the agent endpoint via `databricks.sdk.WorkspaceClient.serving_endpoints.query`, renders answer + citations as chips that show filename + section on hover, thumbs-up/down + comment widget that POSTs to a Lakebase write helper; persists `conversation_id` in session state (depends on T026, T007)
 - [x] T028 [US2] Implement `app/lakebase_client.py`: thin wrapper using `psycopg` with the bundle-injected DSN to insert into `conversation_history`, `query_logs`, `feedback`
 - [x] T029 [US2] Define the Databricks App in `resources/consumers/analyst.app.yml`: source = `app/`, runtime python, env = Lakebase binding + agent endpoint binding (depends on T027, T028)
 - [x] T030 [US2] Author `evals/dataset.jsonl` 20 P2 questions per `data-model.md`'s eval section (each with `expected_filename`, `expected_section`, `expected_answer_keywords`, `min_citations`)
-- [x] T031 [US2] Implement `evals/clears_eval.py`: connects to the dev endpoint, runs `mlflow.evaluate()` with `databricks-agents` evaluators on the dataset, asserts thresholds C≥0.8, L p95≤8s, E≥0.95, A≥0.9, R≥0.8, S≥0.99; exits non-zero on failure (depends on T026, T030)
+- [x] T031 [US2] Implement `evals/clears_eval.py`: connects to the demo endpoint, runs `mlflow.evaluate()` with `databricks-agents` evaluators on the dataset, asserts thresholds C≥0.8, L p95≤8s, E≥0.95, A≥0.9, R≥0.8, S≥0.99; exits non-zero on failure (depends on T026, T030)
 - [x] T032 [US2] Define Lakehouse Monitoring in `resources/consumers/kpi_drift.yml`: `inference` profile on `gold_filing_kpis`, slicing on `company_name`, `fiscal_year`; baselines computed from first 10 filings (depends on T011)
 - [x] T033 [US2] Extend `resources/dashboards/usage.lvdash.yml` with widgets over `lakebase.query_logs`: top questions, daily active users, p95 latency, citation count distribution, ungrounded-answer rate (depends on T028, T017)
 
@@ -116,7 +116,7 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 
 - [x] T035 [US3] Implement `agent/supervisor.py`: detects company names via a small classifier or LLM call, fans out a per-company query through `analyst_agent`, pulls structured `gold_filing_kpis` rows via `tools.py`, formats a markdown table; returns `agent_path='supervisor'` in the response (depends on T024, T023; tests T034 must fail first)
 - [x] T036 [US3] Update `agent/analyst_agent.py` to detect cross-company intent at the routing layer and delegate to `supervisor.handle()`; otherwise stay in single-filing path (depends on T035)
-- [x] T037 [US3] Re-run `agent/log_and_register.py` from CI (GH Actions deploy step in T003) to register a new UC model version with the supervisor enabled and re-assign alias `@dev`; the serving endpoint follows the alias so no yml edit is needed
+- [x] T037 [US3] Re-run `agent/log_and_register.py` from CI (GH Actions deploy step in T003) to register a new UC model version with the supervisor enabled and re-assign alias `@demo`; the serving endpoint follows the alias so no yml edit is needed
 - [x] T038 [US3] Author 10 P3 questions in `evals/dataset.jsonl` (each with `expected_companies` and `expected_table_columns`) (depends on T030)
 - [x] T039 [US3] Extend `evals/clears_eval.py` to slice metrics by `category in {P2, P3}` and assert SC-002 ≥0.8 on P2, SC-003 ≥0.7 on P3 (depends on T031, T038)
 - [x] T040 [US3] Update `app/app.py` to render markdown tables (Streamlit `st.markdown(..., unsafe_allow_html=False)` already handles this) and surface a "show structured KPIs" expander next to each row (depends on T036)
@@ -127,12 +127,12 @@ This is a single-DAB Databricks project. SQL pipeline code at `pipelines/sql/`, 
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T041 [P] Run `databricks bundle validate -t dev` and resolve any schema warnings
+- [ ] T041 [P] Run `databricks bundle validate -t demo` and resolve any schema warnings
 - [ ] T042 [P] Run `databricks bundle validate -t prod` (no deploy) to confirm prod target compiles
 - [ ] T043 Walk through `quickstart.md` end-to-end on a clean workspace; capture timing for SC-005
 - [x] T044 [P] Add a Lakeview widget on `lakebase.query_logs` summarising "ungrounded answer rate by week" — content-gap signal per Reffy
 - [x] T045 [P] Document operating runbook in `docs/runbook.md`: how to add a sample filing, how to debug a low quality_score, how to roll an agent endpoint version, how to inspect CLEARS metrics in MLflow
-- [ ] T046 Run `python evals/clears_eval.py` against the dev endpoint and store the MLflow run ID in `docs/runbook.md` as the v1 baseline
+- [ ] T046 Run `python evals/clears_eval.py` against the demo endpoint and store the MLflow run ID in `docs/runbook.md` as the v1 baseline
 - [x] T047 [P] Add an SC-006 verification assertion in `evals/clears_eval.py`: query Vector Search for a known-rejected filename and assert zero hits (verifies "100% rubric exclusion")
 - [x] T048 [P] Add an SC-001 timing widget to `resources/dashboards/usage.lvdash.yml` over `gold_filing_kpis` joined to `bronze_filings.ingested_at`: P95 of `extracted_at - ingested_at` per company; alerts if > 10 minutes
 

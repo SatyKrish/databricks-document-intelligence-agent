@@ -29,5 +29,5 @@ resources:
 # `grants`. Both USE_CATALOG and (USE_SCHEMA, SELECT, EXECUTE) are required
 # for analysts to query UC tables; the catalog half is often forgotten because
 # it's not on the schema securable. Both are applied post-deploy by
-# scripts/bootstrap-dev.sh and the CI deploy workflow via the UC permissions
+# scripts/bootstrap-demo.sh and the CI deploy workflow via the UC permissions
 # API. Idempotent.

@@ -11,9 +11,9 @@ python3 -m py_compile \
   app/app.py app/lakebase_client.py \
   evals/clears_eval.py scripts/wait_for_kpis.py samples/synthesize.py
 
-bash -n scripts/bootstrap-dev.sh
+bash -n scripts/bootstrap-demo.sh
 pytest agent/tests
-databricks bundle validate --strict -t dev
+databricks bundle validate --strict -t demo
 ```
 
 Expected prod safety check:
@@ -24,14 +24,14 @@ databricks bundle validate --strict -t prod
 
 This should fail unless `service_principal_id` is provided.
 
-## Fresh Dev Bring-Up
+## Fresh Demo Bring-Up
 
 ```bash
 export DOCINTEL_CATALOG=workspace
-export DOCINTEL_SCHEMA=docintel_10k_dev
+export DOCINTEL_SCHEMA=docintel_10k_demo
 export DOCINTEL_WAREHOUSE_ID=<warehouse-id>
 
-./scripts/bootstrap-dev.sh
+./scripts/bootstrap-demo.sh
 ```
 
 Expected outcomes:
@@ -66,7 +66,7 @@ Expected:
 
 ```bash
 python evals/clears_eval.py \
-  --endpoint analyst-agent-dev \
+  --endpoint analyst-agent-demo \
   --dataset evals/dataset.jsonl
 ```
 
@@ -78,7 +78,7 @@ Expected:
 
 ## App Checks
 
-- Open `doc-intel-analyst-dev`.
+- Open `doc-intel-analyst-demo`.
 - Ask: `What was ACME's revenue in fiscal year 2024?`
 - Confirm the response has citations and the turn is written to Lakebase.
 - Submit thumbs feedback and confirm a feedback row is written.
@@ -88,11 +88,11 @@ Expected:
 If app-level OBO is enabled:
 
 - Confirm `resources/consumers/analyst.app.yml:user_api_scopes` is uncommented.
-- Run `databricks bundle deploy -t dev && databricks bundle run -t dev analyst_app`.
+- Run `databricks bundle deploy -t demo && databricks bundle run -t demo analyst_app`.
 - Confirm bootstrap or CI verifies `serving.serving-endpoints` and `sql` scopes.
 - Check audit logs for user-scoped downstream access.
 
 If app-level OBO is not enabled:
 
-- Treat the deployment as reference/dev only.
+- Treat the deployment as reference/demo only.
 - Do not claim user-level UC row/column enforcement.
