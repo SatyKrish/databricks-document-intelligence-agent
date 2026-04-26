@@ -14,12 +14,18 @@ import streamlit as st
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.config import Config
 
-from app.agent_bricks_client import invoke_agent_endpoint
-from app.agent_bricks_response import normalise_agent_response
-from app import lakebase_client
+try:
+    from app.agent_bricks_client import invoke_agent_endpoint
+    from app.agent_bricks_response import normalise_agent_response
+    from app import lakebase_client
+except ImportError:
+    from agent_bricks_client import invoke_agent_endpoint
+    from agent_bricks_response import normalise_agent_response
+    import lakebase_client
 
 
 AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set by resources/consumers/analyst.app.yml
+OBO_REQUIRED = os.environ.get("DOCINTEL_OBO_REQUIRED", "true").lower() == "true"
 
 
 @st.cache_resource(ttl=3600)
@@ -41,12 +47,15 @@ def _user_client(token: str) -> WorkspaceClient:
 
 def _agent_client() -> WorkspaceClient:
     token = st.context.headers.get("x-forwarded-access-token")
+    if token:
+        return _user_client(token)
     if not token:
+        if not OBO_REQUIRED:
+            return WorkspaceClient()
         raise RuntimeError(
             "Databricks Apps user-token passthrough is required; no "
             "x-forwarded-access-token header was present."
         )
-    return _user_client(token)
 
 
 def _user_email() -> str:

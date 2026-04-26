@@ -85,18 +85,19 @@ Expected:
 - Confirm the response has citations and the turn is written to Lakebase.
 - Submit thumbs feedback and confirm a feedback row is written.
 
-## OBO Verification
+## App Auth Verification
 
-- Confirm `resources/consumers/analyst.app.yml:user_api_scopes` is present.
+- Demo: confirm `user_api_scopes` is unset and `DOCINTEL_OBO_REQUIRED=false`.
+- Prod: confirm `user_api_scopes` is present and `DOCINTEL_OBO_REQUIRED=true`.
 - Run:
   ```bash
   AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
   databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
   databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
   ```
-- Confirm bootstrap or CI verifies `serving.serving-endpoints` and `sql` scopes.
-- Check audit logs for user-scoped downstream access through Agent Bricks, Knowledge Assistant, and the structured KPI SQL function.
-- If the workspace cannot grant user-token passthrough, deployment is invalid and must fail.
+- Confirm bootstrap or CI verifies the target auth mode. Demo grants the App SP endpoint access; prod verifies `serving.serving-endpoints` and `sql` scopes.
+- For prod, check audit logs for user-scoped downstream access through Agent Bricks, Knowledge Assistant, and the structured KPI SQL function.
+- If prod cannot grant user-token passthrough, deployment is invalid and must fail.
 
 ## Latest Demo Snapshot
 

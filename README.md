@@ -288,6 +288,7 @@ Implementation uses `mlflow.evaluate(model_type="databricks-agent")` for the LLM
 | `max_pdf_bytes` | `52428800` (50 MB) | Reject filings larger than this |
 | `analyst_group` | `account users` | UC group granted SELECT/USE on schema, READ/WRITE on volume |
 | `agent_endpoint_name` | `UNSET_AGENT_BRICKS_ENDPOINT` | Generated Agent Bricks Supervisor endpoint resolved by `scripts/resolve-agent-endpoint.sh`; pass it on deploy/app-run commands after bootstrap |
+| `app_obo_required` | `true` (prod) / `false` (demo) | Controls Databricks Apps user-token passthrough. Demo can use the App SP when passthrough is unavailable; prod requires OBO. |
 
 Override via `--var name=value` on any `bundle` command.
 

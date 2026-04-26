@@ -2,8 +2,9 @@
 
 Persists conversation history, query logs, and feedback per the contracts in
 `specs/001-doc-intel-10k/contracts/`. The Databricks App database resource
-binding exposes standard Postgres env vars (PGHOST, PGPORT, PGUSER,
-PGPASSWORD, PGDATABASE).
+binding exposes Postgres connection env vars (PGHOST, PGPORT, PGUSER,
+PGDATABASE, PGSSLMODE). Lakebase OAuth passwords are minted on demand with the
+Databricks SDK.
 
 Databricks Apps + Lakebase docs (https://docs.databricks.com/aws/en/oltp/) —
 initialize schema at
@@ -24,6 +25,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 import psycopg
+from databricks.sdk import WorkspaceClient
 
 _log = logging.getLogger(__name__)
 
@@ -63,20 +65,36 @@ def _conn() -> Iterator[psycopg.Connection]:
         conninfo = dsn
         kwargs = {}
     else:
-        required = ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")
+        required = ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE")
         missing = [name for name in required if not os.environ.get(name)]
         if missing:
             raise RuntimeError(f"Lakebase binding missing Postgres env vars: {', '.join(missing)}")
+        password = os.environ.get("PGPASSWORD") or _generate_lakebase_password()
         conninfo = ""
         kwargs = {
             "host": os.environ["PGHOST"],
             "port": os.environ["PGPORT"],
             "user": os.environ["PGUSER"],
-            "password": os.environ["PGPASSWORD"],
+            "password": password,
             "dbname": os.environ["PGDATABASE"],
+            "sslmode": os.environ.get("PGSSLMODE", "require"),
         }
     with psycopg.connect(conninfo, autocommit=True, **kwargs) as c:
         yield c
+
+
+def _generate_lakebase_password() -> str:
+    instance_name = os.environ.get("DOCINTEL_LAKEBASE_INSTANCE") or os.environ.get("PGDATABASE")
+    if not instance_name:
+        raise RuntimeError("Lakebase OAuth credential requires DOCINTEL_LAKEBASE_INSTANCE or PGDATABASE")
+    credential = WorkspaceClient().database.generate_database_credential(
+        request_id=str(uuid.uuid4()),
+        instance_names=[instance_name],
+    )
+    token = getattr(credential, "token", None)
+    if not token:
+        raise RuntimeError("Lakebase OAuth credential response did not include a token")
+    return token
 
 
 def init_schema() -> None:

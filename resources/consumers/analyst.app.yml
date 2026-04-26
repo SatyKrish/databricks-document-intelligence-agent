@@ -9,6 +9,10 @@ resources:
         env:
           - name: DOCINTEL_AGENT_ENDPOINT
             value: ${var.agent_endpoint_name}
+          - name: DOCINTEL_OBO_REQUIRED
+            value: ${var.app_obo_required}
+          - name: DOCINTEL_LAKEBASE_INSTANCE
+            value: ${var.lakebase_instance}
 
       # Databricks Apps auto-grants Lakebase permissions to the App SP on
       # deploy — see https://docs.databricks.com/aws/en/dev-tools/databricks-apps/access-data.
@@ -21,11 +25,5 @@ resources:
             instance_name: ${var.lakebase_instance}
             permission: CAN_CONNECT_AND_CREATE
 
-      # Mandatory OBO scopes. Requires the workspace-level "Databricks Apps -
-      # user token passthrough" feature.
-      # Docs: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/iam-auth
-      user_api_scopes:
-        - serving.serving-endpoints
-        - sql
-        - iam.access-control:read
-        - iam.current-user:read
+      # Prod declares user_api_scopes in databricks.yml. Demo leaves them unset
+      # so workspaces without Apps user-token passthrough can use App-SP calls.

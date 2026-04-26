@@ -87,12 +87,12 @@ Metric key names can vary across MLflow/databricks-agents versions. The eval run
 | Lakebase tables not writable from deployed App | Local-dev `streamlit run` initialised schema under user identity, not App SP | Connect as App SP and `DROP TABLE feedback, query_logs, conversation_history`; next App run re-creates them under SP. See `app/README.md` |
 | CLEARS Latency axis fails | Agent Bricks orchestration or Knowledge Assistant source is too broad | Narrow the Knowledge Assistant source, tune Supervisor instructions, or reduce structured-tool fan-out |
 | Citation chips render but filenames show `source` | Knowledge Assistant footnote format changed or omitted filename markers | Capture the raw Agent Bricks payload and compare it with `app/agent_bricks_response.py`'s markdown-footnote parser |
-| App errors connecting to Lakebase | Database resource binding missing Postgres env vars | Check the `docintel-lakebase` resource binding and `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` in the App runtime |
+| App errors connecting to Lakebase | Database resource binding missing connection fields, or OAuth credential minting failed | Check the `docintel-lakebase` resource binding plus `PGHOST`/`PGPORT`/`PGUSER`/`PGDATABASE`/`DOCINTEL_LAKEBASE_INSTANCE` in the App runtime. `PGPASSWORD` is minted at connection time by `app/lakebase_client.py` |
 
 ## Verifying end-to-end OBO
 
 1. **Workspace admin** enables the "Databricks Apps - user token passthrough" feature in workspace settings.
-2. Confirm the required scopes are declared in `resources/consumers/analyst.app.yml`:
+2. Confirm the required scopes are declared on the prod target in `databricks.yml`:
    ```yaml
    user_api_scopes:
      - serving.serving-endpoints     # invoke Agent Bricks endpoint as user
@@ -100,6 +100,9 @@ Metric key names can vary across MLflow/databricks-agents versions. The eval run
      - iam.access-control:read        # default
      - iam.current-user:read          # default
    ```
+
+Demo uses `app_obo_required=false` unless overridden; the bootstrap grants the App service principal `CAN_QUERY` on the generated Supervisor endpoint.
+
 3. Redeploy:
    ```bash
    AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"

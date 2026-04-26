@@ -4,13 +4,9 @@
 #   injected port/host and disable Streamlit CORS/XSRF behind the Apps proxy.
 
 command:
-  - streamlit
-  - run
-  - app/app.py
-  - --server.port
-  - "${DATABRICKS_APP_PORT:-8000}"
-  - --server.address
-  - "0.0.0.0"
+  - sh
+  - -c
+  - exec streamlit run app.py --server.port "${DATABRICKS_APP_PORT:-8000}" --server.address 0.0.0.0
 
 env:
   # Disable Streamlit's CORS + XSRF self-checks. The Apps reverse-proxy origin

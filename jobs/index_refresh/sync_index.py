@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 from datetime import timedelta
 import logging
-import sys
 import time
 
 from databricks.sdk import WorkspaceClient
@@ -35,7 +34,33 @@ def _wait_index_ready(w: WorkspaceClient, index_name: str, *, timeout_seconds: i
         time.sleep(15)
 
 
-def main() -> int:
+def _sync_index_when_ready(w: WorkspaceClient, index_name: str, *, timeout_seconds: int = 1200) -> None:
+    deadline = time.time() + timeout_seconds
+    next_log = 60
+    started = time.time()
+    while True:
+        try:
+            w.vector_search_indexes.sync_index(index_name)
+            return
+        except Exception as exc:
+            message = str(exc)
+            transient = "not ready to sync yet" in message or "needs to be in one of the following states" in message
+            if not transient or time.time() >= deadline:
+                raise
+            elapsed = int(time.time() - started)
+            if elapsed >= next_log:
+                log_message = message.splitlines()[0] if message else type(exc).__name__
+                logging.getLogger("vs-sync").info(
+                    "index %s is not syncable yet after %ss: %s",
+                    index_name,
+                    elapsed,
+                    log_message,
+                )
+                next_log += 60
+            time.sleep(15)
+
+
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--endpoint", required=True)
     p.add_argument("--index", required=True)
@@ -74,13 +99,13 @@ def main() -> int:
         )
         _wait_index_ready(w, args.index)
         log.info("index created and initial sync complete")
-        return 0
+        return
 
     log.info("index %s exists; triggering sync", args.index)
-    w.vector_search_indexes.sync_index(args.index)
+    _wait_index_ready(w, args.index)
+    _sync_index_when_ready(w, args.index)
     log.info("sync triggered")
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
