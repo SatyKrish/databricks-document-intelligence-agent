@@ -1,6 +1,6 @@
 # Design — Databricks Document Intelligence Agent
 
-This document covers the *why*, the architecture, and the build workflow behind the repo. For setup and day-to-day use, see [`README.md`](../README.md). For day-2 ops, see [`runbook.md`](./runbook.md).
+This document covers the why and architecture behind the repo. For setup, deployment commands, and troubleshooting, see [`runbook.md`](./runbook.md).
 
 ## Table of contents
 
@@ -261,7 +261,7 @@ AI-driven here means Claude carries the boring parts (boilerplate YAML, retry-lo
 
 ## Deploy ordering: foundation → consumers
 
-DABs deploy *everything in one shot*. But our resources have a chicken-and-egg problem on a fresh workspace:
+DABs reconcile workspace resources from YAML, but a fresh workspace has real data dependencies that cannot all be satisfied in one pass:
 
 ```
         ┌────────────────────────────────────────────────┐
@@ -282,11 +282,10 @@ DABs deploy *everything in one shot*. But our resources have a chicken-and-egg p
               Knowledge Assistant needs the Vector Search index.
                     Monitor needs the table populated.
                           Table needs the pipeline to run.
-
-   ▶ Single `bundle deploy` → 4+ errors on a fresh workspace.
+   ▶ Single `bundle deploy` cannot create the whole stack from scratch.
 ```
 
-The fix is a **staged deploy** orchestrated by `scripts/bootstrap-demo.sh`. Resources are split into two directories by data dependency:
+The repo keeps this ordering explicit by splitting resources by dependency:
 
 ```
    resources/
@@ -305,49 +304,9 @@ The fix is a **staged deploy** orchestrated by `scripts/bootstrap-demo.sh`. Reso
        └── lakebase_catalog.yml  (needs instance AVAILABLE)
 ```
 
-**The bootstrap script auto-detects which mode to run** by checking whether the Agent Bricks Supervisor exists and has generated a serving endpoint:
+`scripts/bootstrap-demo.sh` is the operational entry point for first bring-up and steady-state demo deploys. It stages foundation resources, materializes the data/index/Agent Bricks dependencies, restores consumer resources, restarts the app, grants access, and runs a smoke query.
 
-```
-                 does doc-intel-supervisor-${target} have endpoint_name?
-                                     │
-                          no ◀───────┴───────▶ yes
-                          │                     │
-                          ▼                     ▼
-                ┌──────────────────┐   ┌──────────────────┐
-                │  FIRST-DEPLOY    │   │  STEADY-STATE    │
-                │  (staged)        │   │  (full deploy)   │
-                ├──────────────────┤   ├──────────────────┤
-                │ 1. temp-rename   │   │ 1. bundle deploy │
-                │    consumers/*   │   │    (full bundle) │
-                │    .yml.skip     │   │                  │
-                │ 2. bundle deploy │   │ 2. refresh data: │
-                │    (foundation)  │   │    upload, run   │
-                │ 3. produce data: │   │    pipeline,     │
-                │    upload, run,  │   │    sync index,   │
-                │    sync index,   │   │    update Agent  │
-                │    Agent Bricks  │   │    Bricks        │
-                │ 4. wait Lakebase │   │    serving in-   │
-                │    AVAILABLE     │   │    place         │
-                │ 5. restore yamls │   │                  │
-                │ 6. bundle deploy │   │                  │
-                │    (full bundle) │   │                  │
-                └────────┬─────────┘   └────────┬─────────┘
-                         │                       │
-                         └───────────┬───────────┘
-                                     ▼
-                         ┌──────────────────────────┐
-                         │  Common to both:         │
-                         │  • bundle run analyst_app│
-                         │  • UC grants chain       │
-                         │  • smoke check           │
-                         └──────────────────────────┘
-```
-
-**Why two modes?** DAB tracks resource state; if you run the temp-rename trick against an existing deployment, DAB sees the consumer YAMLs as removed and plans to delete the app, monitor, dashboard, etc. Use FIRST-DEPLOY only for a fresh workspace; use STEADY-STATE after resources exist.
-
-CI (`.github/workflows/deploy.yml`) assumes steady-state — the first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-demo.sh`. After that, every push to `main` runs the steady-state path: full `bundle deploy` → refresh data → sync index → update Agent Bricks → grants → CLEARS gate.
-
-For the per-step procedure and known failure modes, see [`runbook.md` § Known deploy ordering gaps](./runbook.md#known-deploy-ordering-gaps).
+The design point is not the script itself; it is that resource dependencies are explicit and repeatable. The exact command flow and failure modes are owned by [`runbook.md` § Deploy paths](./runbook.md#deploy-paths) and [`runbook.md` § Known deploy ordering gaps](./runbook.md#known-deploy-ordering-gaps).
 
 ---
 
