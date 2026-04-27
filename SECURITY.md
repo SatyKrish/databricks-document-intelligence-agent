@@ -2,7 +2,7 @@
 
 ## Supported Security Posture
 
-This reference is designed for Databricks workspaces using Unity Catalog, Agent Bricks, AI Gateway, Databricks Apps resource bindings, and end-to-end on-behalf-of (OBO) user identity in prod. Demo can run with `app_obo_required=false` when the workspace does not have Databricks Apps user-token passthrough enabled; in that mode the App service principal invokes Agent Bricks and is granted `CAN_QUERY` after deploy.
+This reference is designed for Databricks workspaces using Unity Catalog, Agent Bricks, AI Gateway, Databricks Apps resource bindings, and end-to-end on-behalf-of (OBO) user identity in prod. Demo can run with `app_obo_required=false` when the workspace does not have Databricks Apps user-token passthrough enabled. In that mode the App service principal invokes Agent Bricks and is granted `CAN_QUERY` after deploy.
 
 ## Enabling End-To-End OBO
 

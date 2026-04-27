@@ -382,7 +382,7 @@ import json
 app = json.loads('''$app_state''')
 scopes = app.get('user_api_scopes')
 if scopes:
-    raise SystemExit(f'demo SP-fallback expected no user_api_scopes, got {scopes}')
+    raise SystemExit(f'demo App-SP mode expected no user_api_scopes, got {scopes}')
 print('  OBO disabled for demo; user_api_scopes unset')
 "
     grant_app_sp_endpoint_query "$app_state"

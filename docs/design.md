@@ -133,7 +133,7 @@ Repository code is limited to deterministic tool glue, app UI, evals, and deploy
 - `agent/document_intelligence_agent.py` creates or updates the UC SQL function `<catalog>.<schema>.lookup_10k_kpis`.
 - `doc-intel-supervisor-${target}` is the Supervisor Agent. Its tools are the Knowledge Assistant and the UC SQL KPI function. Supervisor Agent owns tool routing.
 - Agent Bricks generates concrete serving endpoint names for Knowledge Assistant and Supervisor Agent. The repo resolves the live Supervisor endpoint with `scripts/resolve-agent-endpoint.sh` and passes it into DAB as `agent_endpoint_name`.
-- Serving endpoint permissions are granted by endpoint ID after the generated endpoint is ready. The Databricks App does not bind to the endpoint as a resource; it invokes the resolved endpoint with each user's OBO token.
+- Serving endpoint permissions are granted by endpoint ID after the generated endpoint is ready. The Databricks App does not bind to the endpoint as a resource; it invokes the resolved endpoint directly. Prod uses each user's OBO token. Demo uses the App service principal when `DOCINTEL_OBO_REQUIRED=false`.
 - Agent Bricks responses use an OpenAI Responses-style `output` message sequence in current validation. The app displays the last output text group as the answer. Knowledge Assistant citations have been observed as markdown footnotes in intermediate messages, so `app/agent_bricks_response.py` normalizes those footnotes into citation chips.
 
 ### Runtime stack
@@ -166,15 +166,18 @@ Repository code is limited to deterministic tool glue, app UI, evals, and deploy
    │                        │  │   at row-by-row)       │
    └────────────────────────┘  └────────────────────────┘
 
-   OBO (user identity end-to-end, mandatory):
-   ──────────────────────────────
-   App reads `x-forwarded-access-token` from the request and invokes the
+   Target auth modes:
+   ─────────────────
+   Prod reads `x-forwarded-access-token` from the request and invokes the
    Agent Bricks endpoint with the user's identity. AI Gateway and Unity
    Catalog enforce identity, permissions, audit, and routing across the
    agent, model, tools, and data. User token passthrough is a hard
-   prerequisite for production. If the workspace cannot provide end-to-end
-   OBO, deployment must fail rather than silently falling back to a service
-   principal identity.
+   prerequisite for production.
+
+   Demo can set `DOCINTEL_OBO_REQUIRED=false`; the App service principal then
+   invokes the generated Supervisor endpoint and receives `CAN_QUERY` after
+   deploy. This is for development workspaces without Apps user-token
+   passthrough, not for production.
 ```
 
 **Why Postgres for state?** Delta tables are great for analytics but bad at "insert one tiny row per chat turn at high frequency." Lakebase is Databricks's managed Postgres — same governance, right tool for the job.

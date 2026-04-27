@@ -58,7 +58,7 @@ The app receives the generated endpoint as `DOCINTEL_AGENT_ENDPOINT`.
 
 ## Agent Bricks invocation and citations
 
-The app and eval runner invoke the generated Supervisor endpoint through `POST /serving-endpoints/{endpoint}/invocations` with the user's OBO token. They do not use `WorkspaceClient.serving_endpoints.query()` for Agent Bricks calls because workspace validation showed that path did not preserve the needed Agent Bricks response shape.
+The app and eval runner invoke the generated Supervisor endpoint through `POST /serving-endpoints/{endpoint}/invocations`. Prod uses the user's OBO token. Demo uses the App service principal when `DOCINTEL_OBO_REQUIRED=false`. They do not use `WorkspaceClient.serving_endpoints.query()` for Agent Bricks calls because workspace validation showed that path did not preserve the needed Agent Bricks response shape.
 
 Current Agent Bricks output is an OpenAI Responses-style `output` message sequence. `app/agent_bricks_response.py` displays the last output text group as the final answer. Knowledge Assistant citations were observed during 2026-04-26 validation as markdown footnotes in intermediate messages, such as `[^p1]: ... _ACME_10K_2024.pdf_`; the app extracts filenames from those footnotes for citation chips. If citation chips show only `source`, capture a live payload and grep for `[^` and `.pdf_` to confirm whether the Knowledge Assistant citation format changed.
 
@@ -79,9 +79,9 @@ Metric key names can vary across MLflow/databricks-agents versions. The eval run
 | `bundle validate` fails on `ai_parse_document` | Workspace lacks AI Functions GA | Move SQL warehouse to a recent serverless channel |
 | Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
 | `DOCINTEL_AGENT_ENDPOINT` is `UNSET_AGENT_BRICKS_ENDPOINT` | Bundle deploy/run omitted the generated endpoint variable | Re-run with `--var "agent_endpoint_name=$(./scripts/resolve-agent-endpoint.sh demo)"` |
-| Agent endpoint 401 | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and `resources/consumers/analyst.app.yml:user_api_scopes` includes `serving.serving-endpoints` and `sql` |
-| App deploy fails with `Databricks Apps - user token passthrough feature is not enabled` | Workspace/org prerequisite missing | Enable the Databricks Apps user-token passthrough feature and rerun bootstrap |
-| Agent answers ignore user UC permissions | OBO scopes wiped by `bundle run` (documented destructive-update behavior — see [Databricks Apps deploy docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy)) | Re-apply: `databricks apps update doc-intel-analyst-demo --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read` |
+| Agent endpoint 401 | Target auth mode does not have endpoint access | Demo: verify bootstrap/CI granted the App SP `CAN_QUERY` on the generated endpoint. Prod: verify `x-forwarded-access-token` is present and target `user_api_scopes` include `serving.serving-endpoints` and `sql` |
+| App deploy fails with `Databricks Apps - user token passthrough feature is not enabled` | Prod target requires a workspace/org prerequisite | Enable Databricks Apps user-token passthrough and rerun. Demo should keep `app_obo_required=false` unless validating OBO |
+| Agent answers ignore user UC permissions in prod | OBO scopes wiped by `bundle run` (documented destructive-update behavior — see [Databricks Apps deploy docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy)) | Re-apply scopes to the target app: `databricks apps update <app-name> --user-api-scopes serving.serving-endpoints,sql,iam.access-control:read,iam.current-user:read` |
 | Agent deployment cannot grant endpoint query permission | Permissions API was called with endpoint name instead of internal endpoint ID, or the generated endpoint is not ready | Use current `agent/document_intelligence_agent.py`; it waits for readiness and grants by serving endpoint ID |
 | Streamlit user sees stale UC permissions | OBO token captured at WebSocket open; never refreshes ([Databricks Apps runtime docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/app-runtime)) | Reload the page after permission changes |
 | Lakebase tables not writable from deployed App | Local-dev `streamlit run` initialised schema under user identity, not App SP | Connect as App SP and `DROP TABLE feedback, query_logs, conversation_history`; next App run re-creates them under SP. See `app/README.md` |
@@ -103,11 +103,12 @@ Metric key names can vary across MLflow/databricks-agents versions. The eval run
 
 Demo uses `app_obo_required=false` unless overridden; the bootstrap grants the App service principal `CAN_QUERY` on the generated Supervisor endpoint.
 
-3. Redeploy:
+3. Redeploy the OBO-enabled target:
    ```bash
-   AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
-   databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
-   databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
+   TARGET=prod
+   AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh "$TARGET")"
+   databricks bundle deploy -t "$TARGET" --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+   databricks bundle run -t "$TARGET" --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
    ```
 4. Verify: bootstrap scope checks assert required scopes. Visit the deployed app, ask a question, and confirm in audit logs that Agent Bricks, Knowledge Assistant, and structured KPI SQL calls run under the invoking user's identity.
 
@@ -144,7 +145,7 @@ Latency p95:         31711 ms
 P2/P3 slices:        unavailable in the current aggregate metric output
 ```
 
-Do not promote this as reference-ready until CLEARS passes and Databricks Apps user-token passthrough is enabled in the target workspace.
+Do not promote this as reference-ready until CLEARS passes. Do not promote to prod until Databricks Apps user-token passthrough is enabled and OBO audit evidence is captured in the target workspace.
 
 ## Known deploy ordering gaps
 

@@ -142,7 +142,7 @@ jobs:
             # behavior). Fail loudly if required user scopes are missing.
             python -c "import json; app=json.load(open('/tmp/app.json')); scopes=set(app.get('user_api_scopes') or []); required={'serving.serving-endpoints','sql'}; missing=required-scopes; assert not missing, f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})'"
           else
-            python -c "import json; app=json.load(open('/tmp/app.json')); scopes=app.get('user_api_scopes'); assert not scopes, f'demo SP-fallback expected no user_api_scopes, got {scopes}'"
+            python -c "import json; app=json.load(open('/tmp/app.json')); scopes=app.get('user_api_scopes'); assert not scopes, f'demo App-SP mode expected no user_api_scopes, got {scopes}'"
             endpoint_id="$(databricks serving-endpoints get "$AGENT_ENDPOINT_NAME" --output json | python -c "import json, sys; e=json.load(sys.stdin); print(e.get('id') or e.get('name'))")"
             python -c "import json; app=json.load(open('/tmp/app.json')); vals=[str(app.get(k)) for k in ('service_principal_client_id','service_principal_name','service_principal_id') if app.get(k) is not None]; print('\n'.join(dict.fromkeys(v for v in vals if v)))" > /tmp/app-sp-candidates.txt
             granted=0

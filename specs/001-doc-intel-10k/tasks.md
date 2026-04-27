@@ -37,9 +37,9 @@ This is a DAB plus Agent Bricks deployment project. SQL pipeline code is at `pip
 
 **⚠️ CRITICAL**: All user stories depend on these.
 
-- [x] T006 Define UC catalog/schema/volume in `resources/dabs/catalog.yml` (or inline in `databricks.yml`): `${var.catalog}.${var.schema}` schema + `raw_filings` volume; grant `USE_CATALOG`, `USE_SCHEMA`, `READ_VOLUME` to a configurable analyst group
-- [x] T007 [P] Define the Lakebase project + database in `resources/lakebase/state.yml` with three tables (`conversation_history`, `query_logs`, `feedback`) per `data-model.md`; expose connection vars to the Streamlit App
-- [x] T008 [P] Add the agent JSON contracts to the bundle as inline strings or copy them to `agent/contracts/` so both the agent and the App reference one source: `agent-request.json`, `agent-response.json`, `feedback-event.json`, `kpi-schema.json`
+- [x] T006 Define UC catalog/schema/volume in `resources/foundation/catalog.yml`: `${var.catalog}.${var.schema}` schema + `raw_filings` volume; grant `USE_CATALOG`, `USE_SCHEMA`, `READ_VOLUME` to a configurable analyst group
+- [x] T007 [P] Define the Lakebase instance/catalog in `resources/foundation/lakebase_instance.yml` and `resources/consumers/lakebase_catalog.yml`; the UC catalog is `${var.schema}_state`, while `app/lakebase_client.py` creates `conversation_history`, `query_logs`, and `feedback` tables at runtime using App resource binding fields plus Databricks-minted Lakebase OAuth credentials
+- [x] T008 [P] Add JSON contracts under `specs/001-doc-intel-10k/contracts/`: `agent-request.json`, `agent-response.json`, `feedback-event.json`, `kpi-schema.json`
 
 **Checkpoint**: catalog, schema, volume, Lakebase database exist; bundle validates.
 
@@ -57,16 +57,16 @@ This is a DAB plus Agent Bricks deployment project. SQL pipeline code is at `pip
 - [x] T010 [US1] Write `pipelines/sql/02_silver_parse.sql`: streaming table `silver_parsed_filings` using `APPLY CHANGES INTO` keyed on `filename`, computing `ai_parse_document(content)` once into `VARIANT` `parsed`, plus `parse_status`/`parse_error` derived from `try_cast` of the result (depends on T009)
 - [x] T011 [US1] Write `pipelines/sql/03_gold_classify_extract.sql`:
   - Streaming table `gold_filing_sections` exploding `parsed:sections[*]`, calling `ai_classify(section_text, ARRAY('MD&A','Risk','Financials','Notes','Other'))` to populate `section_label`, summarising via `ai_query` into the `summary` column
-  - Streaming table `gold_filing_kpis` calling `ai_extract` against the concatenated MD&A + Financials text using the JSON schema in `agent/contracts/kpi-schema.json`, then unpacking into typed columns
+  - Streaming table `gold_filing_kpis` calling `ai_extract` against the concatenated MD&A + Financials text using the JSON schema in `specs/001-doc-intel-10k/contracts/kpi-schema.json`, then unpacking into typed columns
   - Both tables use `APPLY CHANGES INTO` keyed on appropriate keys (depends on T010)
 - [x] T012 [US1] Write `pipelines/sql/04_gold_quality.sql`: materialized view `gold_filing_quality` invoking `ai_query` 5 times per section row to score parse_completeness, layout_fidelity, ocr_confidence, section_recognizability, kpi_extractability (each 0–6); compute `quality_score` and persist `quality_breakdown` STRUCT (depends on T011)
 - [x] T013 [US1] Update `gold_filing_sections` (in T011 or a follow-on view) to add `embed_eligible = (quality_score >= ${var.quality_threshold} AND parse_status = 'ok')` by joining with `gold_filing_quality`
-- [x] T014 [US1] Define the Lakeflow SDP in `resources/pipelines/doc_intel.pipeline.yml`: serverless, libraries point at `pipelines/sql/*.sql`, target = `${var.catalog}.${var.schema}`, file-arrival event trigger on the `raw_filings` volume, retries=2 (depends on T009-T013)
-- [x] T015 [US1] Define the retention Lakeflow Job in `resources/jobs/retention.job.yml`: daily schedule, single Python task that lists the volume via `WorkspaceClient.files`, removes files with `modificationTime < now()-90d`, logs deletions; uses Service Principal in prod only (depends on T006)
+- [x] T014 [US1] Define the Lakeflow SDP in `resources/foundation/doc_intel.pipeline.yml`: serverless, libraries point at `pipelines/sql/*.sql`, target = `${var.catalog}.${var.schema}`, triggered in demo and continuous in prod (depends on T009-T013)
+- [x] T015 [US1] Define the retention Lakeflow Job in `resources/foundation/retention.job.yml`: daily schedule, single Python task that lists the volume via `WorkspaceClient.files`, removes files with `modificationTime < now()-90d`, logs deletions; uses Service Principal in prod only (depends on T006)
 - [x] T016 [US1] Add synthetic samples (`samples/{ACME,BETA,GAMMA}_10K_2024.pdf` + `samples/garbage_10K_2024.pdf` for SC-006) reproducible from `samples/synthesize.py`; documented in `samples/README.md`
-- [x] T017 [US1] Write a Lakeview `resources/dashboards/usage.lvdash.yml` containing one initial widget over `gold_filing_kpis` (count by company_name, count by fiscal_year); will be extended in US2/US3 (depends on T011)
+- [x] T017 [US1] Write a Lakeview dashboard source at `src/dashboards/usage.lvdash.json`, managed by `resources/consumers/usage.dashboard.yml`, containing one initial widget over `gold_filing_kpis` (count by company_name, count by fiscal_year); will be extended in US2/US3 (depends on T011)
 
-**Checkpoint**: P1 acceptance scenarios 1–4 pass via the quickstart commands.
+**Checkpoint target**: P1 acceptance scenarios 1–4 pass via the quickstart commands. Latest workspace evidence is tracked in `VALIDATION.md`.
 
 ---
 
@@ -89,16 +89,16 @@ This is a DAB plus Agent Bricks deployment project. SQL pipeline code is at `pip
 - [x] T023 [US2] Implement `agent/tools.py` as deterministic structured KPI tool glue for Agent Bricks, wrapping governed SQL over `gold_filing_kpis`
 - [x] T024 [US2] Remove custom `agent/analyst_agent.py` and direct `mlflow.pyfunc` registration; Knowledge Assistant owns single-filing cited Q&A (depends on T022, T023)
 - [x] T025 [US2] Remove `agent/log_and_register.py` and bespoke model-version promotion from the production path; `agent/document_intelligence_agent.py` configures Agent Bricks resources idempotently instead
-- [x] T026 [US2] Replace `resources/consumers/agent.serving.yml` with `agent/document_intelligence_agent.py` Agent Bricks endpoint/configuration behind AI Gateway with mandatory OBO and guardrails (depends on T024, T025)
-- [x] T027 [US2] Implement `app/app.py` (Streamlit): chat input, calls the Agent Bricks endpoint as the invoking user, renders answer + citations as chips, thumbs-up/down + comment widget that POSTs to a Lakebase write helper; persists `conversation_id` in session state (depends on T026, T007)
-- [x] T028 [US2] Implement `app/lakebase_client.py`: thin wrapper using `psycopg` with the bundle-injected DSN to insert into `conversation_history`, `query_logs`, `feedback`
+- [x] T026 [US2] Replace `resources/consumers/agent.serving.yml` with `agent/document_intelligence_agent.py` Agent Bricks endpoint/configuration behind AI Gateway with prod OBO and demo App-SP mode (depends on T024, T025)
+- [x] T027 [US2] Implement `app/app.py` (Streamlit): chat input, calls the Agent Bricks endpoint using the target auth mode, renders answer + citations as chips, thumbs-up/down + comment widget that POSTs to a Lakebase write helper; persists `conversation_id` in session state (depends on T026, T007)
+- [x] T028 [US2] Implement `app/lakebase_client.py`: thin wrapper using `psycopg` with App resource binding connection fields and Databricks-minted Lakebase OAuth credentials to insert into `conversation_history`, `query_logs`, `feedback`
 - [x] T029 [US2] Define the Databricks App in `resources/consumers/analyst.app.yml`: source = `app/`, runtime python, env = Lakebase binding + agent endpoint binding (depends on T027, T028)
 - [x] T030 [US2] Author `evals/dataset.jsonl` 20 P2 questions per `data-model.md`'s eval section (each with `expected_filename`, `expected_section`, `expected_answer_keywords`, `min_citations`)
 - [x] T031 [US2] Implement `evals/clears_eval.py`: connects to the demo endpoint, runs `mlflow.evaluate()` with `databricks-agents` evaluators on the dataset, asserts thresholds C≥0.8, L p95≤8s, E≥0.95, A≥0.9, R≥0.8, S≥0.99; exits non-zero on failure (depends on T026, T030)
 - [x] T032 [US2] Define Lakehouse Monitoring in `resources/consumers/kpi_drift.yml`: `inference` profile on `gold_filing_kpis`, slicing on `company_name`, `fiscal_year`; baselines computed from first 10 filings (depends on T011)
-- [x] T033 [US2] Extend `resources/dashboards/usage.lvdash.yml` with widgets over `lakebase.query_logs`: top questions, daily active users, p95 latency, citation count distribution, ungrounded-answer rate (depends on T028, T017)
+- [x] T033 [US2] Extend `src/dashboards/usage.lvdash.json` with widgets over Lakebase `query_logs`: top questions, daily active users, p95 latency, citation count distribution, ungrounded-answer rate (depends on T028, T017)
 
-**Checkpoint**: P2 acceptance scenarios 1–3 pass via App; CLEARS gate passes for the P2 slice of the eval set.
+**Checkpoint target**: P2 acceptance scenarios 1–3 pass via App; CLEARS gate passes for the P2 slice of the eval set. Latest workspace evidence is tracked in `VALIDATION.md`.
 
 ---
 
@@ -121,7 +121,7 @@ This is a DAB plus Agent Bricks deployment project. SQL pipeline code is at `pip
 - [x] T039 [US3] Extend `evals/clears_eval.py` to slice metrics by `category in {P2, P3}` and assert SC-002 ≥0.8 on P2, SC-003 ≥0.7 on P3 (depends on T031, T038)
 - [x] T040 [US3] Update `app/app.py` to render markdown tables (Streamlit `st.markdown(..., unsafe_allow_html=False)` already handles this) and surface a "show structured KPIs" expander next to each row (depends on T036)
 
-**Checkpoint**: P3 acceptance scenarios 1–2 pass; CLEARS gate passes for both P2 and P3 slices.
+**Checkpoint target**: P3 acceptance scenarios 1–2 pass; CLEARS gate passes for both P2 and P3 slices. Latest workspace evidence is tracked in `VALIDATION.md`.
 
 ---
 
@@ -130,11 +130,11 @@ This is a DAB plus Agent Bricks deployment project. SQL pipeline code is at `pip
 - [ ] T041 [P] Run `databricks bundle validate -t demo` and resolve any schema warnings
 - [ ] T042 [P] Run `databricks bundle validate -t prod` (no deploy) to confirm prod target compiles
 - [ ] T043 Walk through `quickstart.md` end-to-end on a clean workspace; capture timing for SC-005
-- [x] T044 [P] Add a Lakeview widget on `lakebase.query_logs` summarising "ungrounded answer rate by week" — content-gap signal per Reffy
+- [x] T044 [P] Add a Lakeview widget on Lakebase `query_logs` summarising "ungrounded answer rate by week" — content-gap signal per Reffy
 - [x] T045 [P] Document operating runbook in `docs/runbook.md`: how to add a sample filing, how to debug a low quality_score, how to roll an agent endpoint version, how to inspect CLEARS metrics in MLflow
 - [ ] T046 Run `python evals/clears_eval.py` against the demo endpoint and store the MLflow run ID in `docs/runbook.md` as the v1 baseline
 - [x] T047 [P] Add an SC-006 verification assertion in `evals/clears_eval.py`: query Vector Search for a known-rejected filename and assert zero hits (verifies "100% rubric exclusion")
-- [x] T048 [P] Add an SC-001 timing widget to `resources/dashboards/usage.lvdash.yml` over `gold_filing_kpis` joined to `bronze_filings.ingested_at`: P95 of `extracted_at - ingested_at` per company; alerts if > 10 minutes
+- [x] T048 [P] Add an SC-001 timing widget to `src/dashboards/usage.lvdash.json` over `gold_filing_kpis` joined to `bronze_filings.ingested_at`: P95 of `extracted_at - ingested_at` per company; alerts if > 10 minutes
 
 ---
 

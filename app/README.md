@@ -6,7 +6,7 @@ Source for the Databricks App `doc-intel-analyst-${target}`. Streamlit chat UI o
 
 | File | Purpose |
 |---|---|
-| `app.py` | Streamlit entry point — chat loop, OBO client, citation rendering. |
+| `app.py` | Streamlit entry point — chat loop, target auth client, citation rendering. |
 | `app.yaml` | Databricks Apps runtime config (port, address, CORS/XSRF env vars). |
 | `lakebase_client.py` | psycopg-based persistence to Lakebase Postgres. |
 | `requirements.txt` | Python deps installed by the Apps runtime. |
@@ -43,10 +43,11 @@ export PGHOST="$(databricks database get-database-instance "${DOCINTEL_LAKEBASE_
   --output json | jq -r '.read_write_dns')"
 
 export DOCINTEL_AGENT_ENDPOINT="$(./scripts/resolve-agent-endpoint.sh demo)"
+export DOCINTEL_OBO_REQUIRED=false
 streamlit run app/app.py
 ```
 
-Local runs do not have the Databricks Apps `x-forwarded-access-token` header, so they cannot validate the Agent Bricks OBO path. Use the deployed App for agent validation.
+Local runs do not have the Databricks Apps `x-forwarded-access-token` header, so they cannot validate the Agent Bricks OBO path. Use a deployed OBO-enabled target for prod identity validation.
 
 If you accidentally run Lakebase schema initialization with user creds (`DATABRICKS_CLIENT_ID`/`SECRET` unset), `lakebase_client.init_schema()` logs a warning identifying the mismatch. The tables get created under your user account, not the App SP, and the deployed App will lose write access. Drop the user-owned tables and re-init under the App SP to recover:
 

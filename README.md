@@ -73,7 +73,7 @@ For architecture and deploy ordering, see [**`docs/design.md`**](./docs/design.m
 
 Full checklists in [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
 
-> Latest demo status, 2026-04-26: Agent Bricks bootstrap and direct Supervisor endpoint smoke passed. Reference-ready remains blocked by Databricks Apps user-token passthrough and CLEARS thresholds. See [`VALIDATION.md`](./VALIDATION.md).
+> Latest demo status, 2026-04-26: Agent Bricks bootstrap, Databricks App deploy, direct Supervisor endpoint smoke, and Vector Search index-refresh smoke passed. Reference-ready remains blocked by CLEARS thresholds. Prod readiness still requires user-token passthrough/OBO evidence. See [`VALIDATION.md`](./VALIDATION.md).
 
 ---
 
@@ -81,7 +81,7 @@ Full checklists in [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
 
 Databricks creation path: [Create an AI agent](https://docs.databricks.com/aws/en/generative-ai/agent-framework/create-agent) → Knowledge Assistant for document Q&A, with Supervisor Agent coordinating hosted tools.
 
-The production agent path is:
+The Agent Bricks path is:
 
 1. `jobs/index_refresh/sync_index.py` creates/syncs the Mosaic AI Vector Search Delta-Sync index over `gold_filing_sections_indexable`.
 2. `agent/document_intelligence_agent.py` creates or updates the Agent Bricks Knowledge Assistant with that Vector Search index as its knowledge source. The source uses `summary` as the searchable text column and `filename` as the document URI column.
@@ -89,7 +89,7 @@ The production agent path is:
 4. `agent/document_intelligence_agent.py` creates or updates the Agent Bricks Supervisor Agent with two tools: the Knowledge Assistant for cited document Q&A and the UC function for deterministic KPI lookups.
 5. Agent Bricks generates concrete serving endpoint names. Resolve the live Supervisor endpoint with `./scripts/resolve-agent-endpoint.sh <target>`.
 6. The Databricks App receives the resolved endpoint through the `agent_endpoint_name` bundle variable as `DOCINTEL_AGENT_ENDPOINT`.
-7. The app invokes `POST /serving-endpoints/{endpoint}/invocations` directly with the user's OBO token. `WorkspaceClient.serving_endpoints.query()` is not used for Agent Bricks invocation because validation showed it did not preserve the needed Agent Bricks response shape.
+7. The app invokes `POST /serving-endpoints/{endpoint}/invocations` directly. Prod uses each user's OBO token. Demo uses the App service principal when `DOCINTEL_OBO_REQUIRED=false`. `WorkspaceClient.serving_endpoints.query()` is not used for Agent Bricks invocation because validation showed it did not preserve the needed Agent Bricks response shape.
 8. Knowledge Assistant citations currently arrive as markdown footnotes in Agent Bricks output messages. `app/agent_bricks_response.py` normalizes the final answer and extracts citation chips from those footnotes.
 
 Useful Databricks references:
@@ -136,7 +136,7 @@ You need a workspace with **all** of the following enabled:
 
 **Required for production identity:**
 
-- Databricks Apps **user token passthrough** (workspace admin setting). The app must not fall back to broad service-principal reads — see [`SECURITY.md`](./SECURITY.md).
+- Databricks Apps **user token passthrough** (workspace admin setting). Prod requires user-scoped Agent Bricks calls — see [`SECURITY.md`](./SECURITY.md).
 
 ### Free trial signup
 
@@ -383,7 +383,7 @@ This is a production-oriented reference implementation with conservative scale d
 | Compute | CPU only | constitution add'l constraints |
 | Languages | English filings | implicit (foundation model) |
 | Eval set size | 30 questions | spec clarification |
-| OBO end-to-end | Requires workspace-level `Databricks Apps - user token passthrough` feature | [`SECURITY.md`](./SECURITY.md) |
+| Prod OBO end-to-end | Requires workspace-level `Databricks Apps - user token passthrough` feature | [`SECURITY.md`](./SECURITY.md) |
 
 Latency SLOs: P95 ≤ 8s for single-filing, ≤ 20s for cross-company. End-to-end pipeline ≤ 10 min P95 on a 30 MB PDF.
 
@@ -397,7 +397,7 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for local setup, the spec-kit workflo
 
 ## Security
 
-See [`SECURITY.md`](./SECURITY.md) for the mandatory end-to-end OBO identity model, required UC grants, secrets-handling guidance, and how to report security issues in a fork or deployment.
+See [`SECURITY.md`](./SECURITY.md) for the target-specific identity model, required UC grants, secrets-handling guidance, and how to report security issues in a fork or deployment.
 
 ## License
 

@@ -10,7 +10,7 @@ This project is open-sourced as a Databricks reference implementation. Treat it 
 | Pilot-ready | Real filings exercise document variability and cost/latency | Reference-ready plus a reviewed EDGAR pilot corpus |
 | Production-ready | Analysts can use it under governed identity and SLOs | Pilot-ready plus end-to-end OBO, dashboards, alerts, rollback, and runbook evidence |
 
-Current demo status as of 2026-04-26: Agent Bricks bootstrap and direct Supervisor endpoint smoke passed, but the project is not reference-ready yet. The target workspace did not have Databricks Apps user-token passthrough enabled, and the latest synthetic CLEARS run failed the configured quality/latency gate. See [`VALIDATION.md`](./VALIDATION.md#latest-demo-snapshot).
+Current demo status as of 2026-04-26: Agent Bricks bootstrap, Databricks App deploy, direct Supervisor endpoint smoke, Lakebase OAuth credential handling, and Vector Search index-refresh smoke passed. The project is not reference-ready yet because the latest synthetic CLEARS run failed the configured quality/latency gate. Prod readiness still requires user-token passthrough/OBO audit evidence. See [`VALIDATION.md`](./VALIDATION.md#latest-demo-snapshot).
 
 ## Reference-Ready Checklist
 
@@ -19,8 +19,7 @@ Current demo status as of 2026-04-26: Agent Bricks bootstrap and direct Supervis
 - Synthetic PDFs in `samples/` produce at least ACME/BETA/GAMMA KPI rows.
 - Vector Search index sync completes and the Agent Bricks Supervisor endpoint answers a smoke question with citations.
 - `python evals/clears_eval.py --endpoint "$(./scripts/resolve-agent-endpoint.sh demo)" --dataset evals/dataset.jsonl` passes.
-- Databricks Apps user-token passthrough is enabled in the workspace.
-- App starts via `databricks bundle run -t demo --var "agent_endpoint_name=$(./scripts/resolve-agent-endpoint.sh demo)" analyst_app`.
+- App starts via `databricks bundle run -t demo --var "agent_endpoint_name=$(./scripts/resolve-agent-endpoint.sh demo)" analyst_app` in the configured demo auth mode.
 
 ## Pilot-Ready Checklist
 
@@ -34,7 +33,7 @@ Current demo status as of 2026-04-26: Agent Bricks bootstrap and direct Supervis
 ## Production-Ready Checklist
 
 - Databricks Apps user-token passthrough is enabled in the workspace.
-- `resources/consumers/analyst.app.yml:user_api_scopes` is declared and survives `bundle run`.
+- Prod target `user_api_scopes` in `databricks.yml` are declared and survive `bundle run`.
 - Audit logs prove app requests, Agent Bricks, Knowledge Assistant, Vector Search, and structured KPI SQL calls execute under the invoking user where required.
 - Service principal `run_as` is configured for prod via `--var service_principal_id=<sp-app-id>`.
 - Analyst group grants include `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `EXECUTE`, `READ_VOLUME`, and `WRITE_VOLUME` as appropriate.
