@@ -1,6 +1,101 @@
 # Operating Runbook — 10-K Analyst
 
-This runbook covers day-2 operations for the deployed demo/prod stacks. For first-time setup follow [`specs/001-doc-intel-10k/quickstart.md`](../specs/001-doc-intel-10k/quickstart.md).
+This runbook owns setup commands, deploy paths, configuration reference, and day-2 operations for demo/prod stacks. Architecture belongs in [`design.md`](./design.md); validation evidence belongs in [`../VALIDATION.md`](../VALIDATION.md).
+
+## Prerequisites
+
+- Python 3.11 or 3.12.
+- Databricks CLI >= 0.298.
+- A Databricks workspace with Serverless SQL, Unity Catalog, Document Intelligence AI Functions, Mosaic AI Vector Search, Agent Bricks, Databricks Apps, Lakebase, and Lakehouse Monitoring enabled.
+- A serverless SQL warehouse ID.
+
+Prod requires Databricks Apps user token passthrough. Demo can run with `app_obo_required=false` and App service-principal endpoint access.
+
+## Deploy paths
+
+Fresh demo workspace:
+
+```bash
+DOCINTEL_CATALOG=<catalog> \
+DOCINTEL_SCHEMA=<schema> \
+DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
+./scripts/bootstrap-demo.sh
+```
+
+The same script also handles steady-state demo deploys. It auto-detects whether the Agent Bricks Supervisor already exists and avoids deleting consumer resources on existing deployments.
+
+App, YAML, pipeline, or job config changes after first bring-up:
+
+```bash
+AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
+databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
+```
+
+Agent Bricks definition changes:
+
+```bash
+DOCINTEL_CATALOG=<catalog> \
+DOCINTEL_SCHEMA=<schema> \
+DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
+python -m agent.document_intelligence_agent --target demo
+
+AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
+databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
+```
+
+Pipeline SQL changes that must re-process existing filings:
+
+```bash
+databricks bundle run -t demo doc_intel_pipeline
+```
+
+Prod deploys must pass `service_principal_id` and use an OBO-enabled target:
+
+```bash
+TARGET=prod
+AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh "$TARGET")"
+databricks bundle deploy -t "$TARGET" \
+  --var service_principal_id=<sp-app-id> \
+  --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+databricks bundle run -t "$TARGET" \
+  --var service_principal_id=<sp-app-id> \
+  --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" \
+  analyst_app
+```
+
+## Configuration reference
+
+Bundle variables in `databricks.yml`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `catalog` | `workspace` | UC catalog for all resources |
+| `schema` | `docintel_10k` / `docintel_10k_demo` | Schema under the catalog |
+| `lakebase_instance` | per-target | Lakebase database instance name |
+| `lakebase_stopped` | `false` | Set to `true` only after the instance exists |
+| `service_principal_id` | `""` | Required for prod deploys |
+| `warehouse_id` | lookup by name | Used by index refresh, dashboards, and KPI tool |
+| `embedding_model_endpoint_name` | `databricks-bge-large-en` | Vector Search embeddings |
+| `quality_threshold` | `22` | Section quality cutoff for index inclusion |
+| `max_pdf_bytes` | `52428800` | Reject filings larger than 50 MB |
+| `analyst_group` | `account users` | UC group for demo grants |
+| `agent_endpoint_name` | `UNSET_AGENT_BRICKS_ENDPOINT` | Generated Supervisor endpoint resolved by `scripts/resolve-agent-endpoint.sh` |
+| `app_obo_required` | `true` prod, `false` demo | Controls user-token passthrough requirement |
+
+Bootstrap and CI environment variables:
+
+| Variable | Required | Used by |
+|---|---|---|
+| `DOCINTEL_CATALOG` | yes | Bootstrap, CI, eval |
+| `DOCINTEL_SCHEMA` | yes | Bootstrap, CI, eval |
+| `DOCINTEL_WAREHOUSE_ID` | yes | Bootstrap, KPI polling, structured KPI tool |
+| `DOCINTEL_TARGET` | no | Bootstrap target, defaults to `demo` |
+| `DOCINTEL_ANALYST_GROUP` | no | UC grants, defaults to `account users` |
+| `DOCINTEL_WAIT_SECONDS` | no | KPI-table poll timeout |
+| `DOCINTEL_LAKEBASE_TIMEOUT` | no | Lakebase `AVAILABLE` poll timeout |
+| `DATABRICKS_HOST` / `DATABRICKS_TOKEN` | CI only | GitHub Actions auth |
 
 ## Add a sample filing
 
@@ -173,15 +268,6 @@ resolve on a fresh workspace. Each needs a phase-2 step after a prior side effec
      usually succeeds since the instance is then ready.
    - **Fix**: bootstrap waits for Lakebase to reach `AVAILABLE` before the full
      consumer deploy.
-
-A clean fresh-workspace bring-up is a single command:
-
-```bash
-DOCINTEL_CATALOG=<catalog> \
-DOCINTEL_SCHEMA=<schema> \
-DOCINTEL_WAREHOUSE_ID=<warehouse-id> \
-./scripts/bootstrap-demo.sh
-```
 
 The script implements a **staged deploy**: resources are split into
 `resources/foundation/` (no data deps) and `resources/consumers/` (need
