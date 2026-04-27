@@ -38,7 +38,7 @@ This is a DAB plus Agent Bricks deployment project. SQL pipeline code is at `pip
 **⚠️ CRITICAL**: All user stories depend on these.
 
 - [x] T006 Define UC catalog/schema/volume in `resources/foundation/catalog.yml`: `${var.catalog}.${var.schema}` schema + `raw_filings` volume; grant `USE_CATALOG`, `USE_SCHEMA`, `READ_VOLUME` to a configurable analyst group
-- [x] T007 [P] Define the Lakebase instance/catalog in `resources/foundation/lakebase_instance.yml` and `resources/consumers/lakebase_catalog.yml`; the UC catalog is `${var.schema}_state`, while `app/lakebase_client.py` creates `conversation_history`, `query_logs`, and `feedback` tables at runtime using App resource binding fields plus Databricks-minted Lakebase OAuth credentials
+- [x] T007 [P] Define the Lakebase instance/catalog in `resources/foundation/lakebase_instance.yml` and `resources/consumers/lakebase_catalog.yml`; the UC catalog is `${var.schema}_state`, while `app/lakebase_client.py` creates `docintel_app.conversation_history`, `docintel_app.query_logs`, and `docintel_app.feedback` at runtime using App resource binding fields plus Databricks-minted Lakebase OAuth credentials
 - [x] T008 [P] Add JSON contracts under `specs/001-doc-intel-10k/contracts/`: `agent-request.json`, `agent-response.json`, `feedback-event.json`, `kpi-schema.json`
 
 **Checkpoint**: catalog, schema, volume, Lakebase database exist; bundle validates.

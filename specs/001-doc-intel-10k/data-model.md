@@ -1,6 +1,6 @@
 # Phase 1 Data Model
 
-All Delta tables live under the bundle-parameterized `${var.catalog}.${var.schema}`. Lakebase tables live in the bundle-managed Lakebase database instance `${var.lakebase_instance}`, exposed to SQL dashboards through the UC database catalog `${var.schema}_state`.
+All Delta tables live under the bundle-parameterized `${var.catalog}.${var.schema}`. Lakebase tables live in schema `docintel_app` inside the bundle-managed Lakebase database instance `${var.lakebase_instance}`, exposed to SQL dashboards through the UC database catalog `${var.schema}_state`.
 
 ## Bronze
 

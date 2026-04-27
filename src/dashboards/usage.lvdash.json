@@ -26,7 +26,7 @@
         "SELECT created_at::date AS day, agent_path, count(*) AS turns,",
         "  percentile_approx(latency_ms, 0.95) AS latency_p95_ms,",
         "  sum(CASE WHEN array_size(citations) = 0 THEN 1 ELSE 0 END) AS ungrounded",
-        "FROM `__dataset_schema___state`.public.query_logs",
+        "FROM `__dataset_schema___state`.docintel_app.query_logs",
         "GROUP BY 1, 2 ORDER BY 1 DESC"
       ]
     }

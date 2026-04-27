@@ -204,6 +204,51 @@ for i in d.get('database_instances', []):
   done
 }
 
+app_sp_principals() {
+  local app_json="$1"
+  printf '%s' "$app_json" | "$PYTHON" -c "
+import json, sys
+app = json.load(sys.stdin)
+seen = set()
+for key in ('service_principal_client_id', 'service_principal_name', 'service_principal_id'):
+    value = app.get(key)
+    if value is None:
+        continue
+    value = str(value)
+    if value and value not in seen:
+        seen.add(value)
+        print(value)
+"
+}
+
+grant_app_sp_lakebase_use() {
+  local app_json="$1"
+  local principals principal grant_json
+  principals=()
+  while IFS= read -r principal; do
+    [[ -n "$principal" ]] && principals+=("$principal")
+  done < <(app_sp_principals "$app_json")
+  if (( ${#principals[@]} == 0 )); then
+    die "app service principal was not returned by Databricks Apps API"
+  fi
+  for principal in "${principals[@]}"; do
+    grant_json=$("$PYTHON" -c "
+import json, sys
+print(json.dumps({
+    'access_control_list': [{
+        'service_principal_name': sys.argv[1],
+        'permission_level': 'CAN_USE',
+    }]
+}))
+" "$principal")
+    if databricks permissions update database-instances "$LAKEBASE_NAME" --json "$grant_json" >/dev/null 2>&1; then
+      log "  granted CAN_USE on Lakebase $LAKEBASE_NAME to App SP $principal"
+      return 0
+    fi
+  done
+  die "failed to grant CAN_USE on Lakebase $LAKEBASE_NAME to the App service principal"
+}
+
 grant_app_sp_endpoint_query() {
   local app_json="$1"
   local endpoint_json endpoint_id principals principal grant_json
@@ -216,19 +261,7 @@ print(endpoint.get('id') or endpoint.get('name') or '$AGENT_ENDPOINT_NAME')
   principals=()
   while IFS= read -r principal; do
     [[ -n "$principal" ]] && principals+=("$principal")
-  done < <(printf '%s' "$app_json" | "$PYTHON" -c "
-import json, sys
-app = json.load(sys.stdin)
-seen = set()
-for key in ('service_principal_client_id', 'service_principal_name', 'service_principal_id'):
-    value = app.get(key)
-    if value is None:
-        continue
-    value = str(value)
-    if value and value not in seen:
-        seen.add(value)
-        print(value)
-")
+  done < <(app_sp_principals "$app_json")
   if (( ${#principals[@]} == 0 )); then
     die "app service principal was not returned by Databricks Apps API"
   fi
@@ -365,6 +398,7 @@ databricks api patch \
 
 log "  verifying app auth mode on $APP_NAME"
 if app_state=$(databricks apps get "$APP_NAME" --output json 2>/dev/null); then
+  grant_app_sp_lakebase_use "$app_state"
   if [[ "$APP_OBO_REQUIRED" == "true" ]]; then
     "$PYTHON" -c "
 import json

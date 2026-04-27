@@ -35,6 +35,7 @@ export DATABRICKS_CLIENT_SECRET=<app-sp-secret>
 # Locally, set the same connection fields and let lakebase_client.py mint the
 # OAuth database password through the Databricks SDK.
 export DOCINTEL_LAKEBASE_INSTANCE=docintel-demo-state-v1
+export DOCINTEL_LAKEBASE_SCHEMA=docintel_app
 export PGDATABASE=docintel-demo-state-v1
 export PGUSER=<app-sp-application-id>
 export PGPORT=5432
@@ -49,13 +50,11 @@ streamlit run app/app.py
 
 Local runs do not have the Databricks Apps `x-forwarded-access-token` header, so they cannot validate the Agent Bricks OBO path. Use a deployed OBO-enabled target for prod identity validation.
 
-If you accidentally run Lakebase schema initialization with user creds (`DATABRICKS_CLIENT_ID`/`SECRET` unset), `lakebase_client.init_schema()` logs a warning identifying the mismatch. The tables get created under your user account, not the App SP, and the deployed App will lose write access. Drop the user-owned tables and re-init under the App SP to recover:
+If you accidentally run Lakebase schema initialization with user creds (`DATABRICKS_CLIENT_ID`/`SECRET` unset), `lakebase_client.init_schema()` logs a warning identifying the mismatch. The schema gets created under your user account, not the App SP, and the deployed App will lose write access. Drop the user-owned schema and re-init under the App SP to recover:
 
 ```sql
 -- connected as the App SP via the local-dev env above
-DROP TABLE IF EXISTS feedback CASCADE;
-DROP TABLE IF EXISTS query_logs CASCADE;
-DROP TABLE IF EXISTS conversation_history CASCADE;
+DROP SCHEMA IF EXISTS docintel_app CASCADE;
 -- next streamlit run will re-init under the App SP
 ```
 

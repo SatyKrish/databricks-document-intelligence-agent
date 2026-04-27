@@ -13,6 +13,8 @@ resources:
             value: ${var.app_obo_required}
           - name: DOCINTEL_LAKEBASE_INSTANCE
             value: ${var.lakebase_instance}
+          - name: DOCINTEL_LAKEBASE_SCHEMA
+            value: docintel_app
 
       # Databricks Apps auto-grants Lakebase permissions to the App SP on
       # deploy — see https://docs.databricks.com/aws/en/dev-tools/databricks-apps/access-data.

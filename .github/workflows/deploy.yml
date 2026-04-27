@@ -137,6 +137,17 @@ jobs:
         run: |
           databricks apps get doc-intel-analyst-demo --output json > /tmp/app.json
           app_obo_required="$(python -c "import yaml; d=yaml.safe_load(open('databricks.yml')); default=d.get('variables',{}).get('app_obo_required',{}).get('default','true'); value=d.get('targets',{}).get('demo',{}).get('variables',{}).get('app_obo_required', default); print(str(value).lower())")"
+          lakebase_name="$(python -c "import yaml; d=yaml.safe_load(open('databricks.yml')); print(d.get('targets',{}).get('demo',{}).get('variables',{}).get('lakebase_instance','docintel-demo-state-v1'))")"
+          python -c "import json; app=json.load(open('/tmp/app.json')); vals=[str(app.get(k)) for k in ('service_principal_client_id','service_principal_name','service_principal_id') if app.get(k) is not None]; print('\n'.join(dict.fromkeys(v for v in vals if v)))" > /tmp/app-sp-candidates.txt
+          db_granted=0
+          while IFS= read -r principal; do
+            grant_json="$(python -c "import json, sys; print(json.dumps({'access_control_list':[{'service_principal_name':sys.argv[1],'permission_level':'CAN_USE'}]}))" "$principal")"
+            if databricks permissions update database-instances "$lakebase_name" --json "$grant_json"; then
+              db_granted=1
+              break
+            fi
+          done < /tmp/app-sp-candidates.txt
+          test "$db_granted" = "1"
           if [ "$app_obo_required" = "true" ]; then
             # `bundle run` may wipe user_api_scopes (documented destructive-update
             # behavior). Fail loudly if required user scopes are missing.
@@ -144,7 +155,6 @@ jobs:
           else
             python -c "import json; app=json.load(open('/tmp/app.json')); scopes=app.get('user_api_scopes'); assert not scopes, f'demo App-SP mode expected no user_api_scopes, got {scopes}'"
             endpoint_id="$(databricks serving-endpoints get "$AGENT_ENDPOINT_NAME" --output json | python -c "import json, sys; e=json.load(sys.stdin); print(e.get('id') or e.get('name'))")"
-            python -c "import json; app=json.load(open('/tmp/app.json')); vals=[str(app.get(k)) for k in ('service_principal_client_id','service_principal_name','service_principal_id') if app.get(k) is not None]; print('\n'.join(dict.fromkeys(v for v in vals if v)))" > /tmp/app-sp-candidates.txt
             granted=0
             while IFS= read -r principal; do
               grant_json="$(python -c "import json, sys; print(json.dumps({'access_control_list':[{'service_principal_name':sys.argv[1],'permission_level':'CAN_QUERY'}]}))" "$principal")"
