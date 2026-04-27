@@ -14,12 +14,18 @@ import streamlit as st
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.config import Config
 
-from app.agent_bricks_client import invoke_agent_endpoint
-from app.agent_bricks_response import normalise_agent_response
-from app import lakebase_client
+try:
+    from app.agent_bricks_client import invoke_agent_endpoint
+    from app.agent_bricks_response import normalise_agent_response
+    from app import lakebase_client
+except ImportError:
+    from agent_bricks_client import invoke_agent_endpoint
+    from agent_bricks_response import normalise_agent_response
+    import lakebase_client
 
 
 AGENT_ENDPOINT = os.environ["DOCINTEL_AGENT_ENDPOINT"]  # set by resources/consumers/analyst.app.yml
+OBO_REQUIRED = os.environ.get("DOCINTEL_OBO_REQUIRED", "true").lower() == "true"
 
 
 @st.cache_resource(ttl=3600)
@@ -32,9 +38,6 @@ def _user_client(token: str) -> WorkspaceClient:
     the initial HTTP request, then the connection switches to WebSocket — the
     token never refreshes. Long-lived sessions should reload the page after
     permission changes.
-
-    Missing tokens are a deployment prerequisite failure. Production must run
-    through Databricks Apps user-token passthrough.
     """
     return WorkspaceClient(config=Config(
         host=os.environ["DATABRICKS_HOST"],
@@ -44,12 +47,15 @@ def _user_client(token: str) -> WorkspaceClient:
 
 def _agent_client() -> WorkspaceClient:
     token = st.context.headers.get("x-forwarded-access-token")
+    if token:
+        return _user_client(token)
     if not token:
+        if not OBO_REQUIRED:
+            return WorkspaceClient()
         raise RuntimeError(
             "Databricks Apps user-token passthrough is required; no "
             "x-forwarded-access-token header was present."
         )
-    return _user_client(token)
 
 
 def _user_email() -> str:
@@ -86,7 +92,7 @@ def _ensure_session() -> tuple[str, str]:
 
 def _render_citations(citations: list[dict]) -> None:
     if not citations:
-        st.caption("No citations — the agent did not find a grounded source.")
+        st.caption("No citation chips returned for this response.")
         return
     cols = st.columns(min(len(citations), 4))
     for i, c in enumerate(citations[:4]):

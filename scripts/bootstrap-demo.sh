@@ -109,16 +109,16 @@ set_agent_endpoint_name() {
   log "  using Agent Bricks Supervisor endpoint $AGENT_ENDPOINT_NAME"
 }
 
-run_agent_bricks_bootstrap() {
-  local bootstrap_json endpoint
-  bootstrap_json=$("$PYTHON" scripts/bootstrap_agent_bricks.py \
+deploy_document_intelligence_agent() {
+  local agent_json endpoint
+  agent_json=$("$PYTHON" -m agent.document_intelligence_agent \
     --target "$TARGET" \
     --catalog "$DOCINTEL_CATALOG" \
     --schema "$DOCINTEL_SCHEMA" \
     --warehouse-id "$DOCINTEL_WAREHOUSE_ID" \
     --analyst-group "$ANALYST_GROUP") || \
-    die "Agent Bricks bootstrap failed"
-  endpoint=$(printf '%s' "$bootstrap_json" | "$PYTHON" -c "
+    die "Document Intelligence Agent deployment failed"
+  endpoint=$(printf '%s' "$agent_json" | "$PYTHON" -c "
 import json, sys
 payload = json.load(sys.stdin)
 print(payload.get('supervisor_endpoint') or '')
@@ -153,6 +153,15 @@ with open('databricks.yml') as f:
     d = yaml.safe_load(f)
 print(d['targets']['$TARGET']['variables']['lakebase_instance'])
 " 2>/dev/null || echo "")
+APP_OBO_REQUIRED=$("$PYTHON" -c "
+import yaml
+with open('databricks.yml') as f:
+    d = yaml.safe_load(f)
+default = d.get('variables', {}).get('app_obo_required', {}).get('default', 'true')
+value = d.get('targets', {}).get('$TARGET', {}).get('variables', {}).get('app_obo_required', default)
+print(str(value).lower())
+" 2>/dev/null || echo "true")
+
 if [[ -n "$LAKEBASE_NAME" ]]; then
   if instances=$(databricks api get /api/2.0/database/instances --output json 2>/dev/null); then
     conflict=$("$PYTHON" -c "
@@ -193,6 +202,85 @@ for i in d.get('database_instances', []):
     fi
     sleep 15
   done
+}
+
+app_sp_principals() {
+  local app_json="$1"
+  printf '%s' "$app_json" | "$PYTHON" -c "
+import json, sys
+app = json.load(sys.stdin)
+seen = set()
+for key in ('service_principal_client_id', 'service_principal_name', 'service_principal_id'):
+    value = app.get(key)
+    if value is None:
+        continue
+    value = str(value)
+    if value and value not in seen:
+        seen.add(value)
+        print(value)
+"
+}
+
+grant_app_sp_lakebase_use() {
+  local app_json="$1"
+  local principals principal grant_json
+  principals=()
+  while IFS= read -r principal; do
+    [[ -n "$principal" ]] && principals+=("$principal")
+  done < <(app_sp_principals "$app_json")
+  if (( ${#principals[@]} == 0 )); then
+    die "app service principal was not returned by Databricks Apps API"
+  fi
+  for principal in "${principals[@]}"; do
+    grant_json=$("$PYTHON" -c "
+import json, sys
+print(json.dumps({
+    'access_control_list': [{
+        'service_principal_name': sys.argv[1],
+        'permission_level': 'CAN_USE',
+    }]
+}))
+" "$principal")
+    if databricks permissions update database-instances "$LAKEBASE_NAME" --json "$grant_json" >/dev/null 2>&1; then
+      log "  granted CAN_USE on Lakebase $LAKEBASE_NAME to App SP $principal"
+      return 0
+    fi
+  done
+  die "failed to grant CAN_USE on Lakebase $LAKEBASE_NAME to the App service principal"
+}
+
+grant_app_sp_endpoint_query() {
+  local app_json="$1"
+  local endpoint_json endpoint_id principals principal grant_json
+  endpoint_json=$(databricks serving-endpoints get "$AGENT_ENDPOINT_NAME" --output json)
+  endpoint_id=$(printf '%s' "$endpoint_json" | "$PYTHON" -c "
+import json, sys
+endpoint = json.load(sys.stdin)
+print(endpoint.get('id') or endpoint.get('name') or '$AGENT_ENDPOINT_NAME')
+")
+  principals=()
+  while IFS= read -r principal; do
+    [[ -n "$principal" ]] && principals+=("$principal")
+  done < <(app_sp_principals "$app_json")
+  if (( ${#principals[@]} == 0 )); then
+    die "app service principal was not returned by Databricks Apps API"
+  fi
+  for principal in "${principals[@]}"; do
+    grant_json=$("$PYTHON" -c "
+import json, sys
+print(json.dumps({
+    'access_control_list': [{
+        'service_principal_name': sys.argv[1],
+        'permission_level': 'CAN_QUERY',
+    }]
+}))
+" "$principal")
+    if databricks permissions update serving-endpoints "$endpoint_id" --json "$grant_json" >/dev/null 2>&1; then
+      log "  granted CAN_QUERY on $AGENT_ENDPOINT_NAME to App SP $principal"
+      return 0
+    fi
+  done
+  die "failed to grant CAN_QUERY on $AGENT_ENDPOINT_NAME to the App service principal"
 }
 
 upload_samples() {
@@ -256,7 +344,7 @@ if [[ "$MODE" == "first" ]]; then
     --embedding-endpoint "$EMBEDDING_ENDPOINT" || \
     die "VS index creation failed (sync_index.py)"
 
-  run_agent_bricks_bootstrap
+  deploy_document_intelligence_agent
   wait_for_lakebase_available
 
   log "step 3/6: stage-2 deploy (full bundle — consumers join the foundation)"
@@ -286,7 +374,7 @@ else
     die "timed out waiting for $KPI_TABLE"
   databricks bundle run -t "$TARGET" "${BUNDLE_VAR_FLAGS[@]}" index_refresh || \
     log "  warn: index_refresh failed; the table_update trigger will retry on the next pipeline run"
-  run_agent_bricks_bootstrap
+  deploy_document_intelligence_agent
 
   log "step 3/6: skipped (no second deploy needed in steady-state)"
 fi
@@ -308,10 +396,10 @@ databricks api patch \
   --json "{\"changes\":[{\"principal\":\"${ANALYST_GROUP}\",\"add\":[\"USE_SCHEMA\",\"SELECT\",\"EXECUTE\"]}]}" \
   >/dev/null 2>&1 || log "  warn: schema grants failed (may already be applied; UC dedupes)"
 
-# OBO scope verification (only meaningful when user_api_scopes is declared).
-if grep -q '^      user_api_scopes:' resources/consumers/analyst.app.yml 2>/dev/null; then
-  log "  verifying OBO scopes on $APP_NAME"
-  if app_state=$(databricks apps get "$APP_NAME" --output json 2>/dev/null); then
+log "  verifying app auth mode on $APP_NAME"
+if app_state=$(databricks apps get "$APP_NAME" --output json 2>/dev/null); then
+  grant_app_sp_lakebase_use "$app_state"
+  if [[ "$APP_OBO_REQUIRED" == "true" ]]; then
     "$PYTHON" -c "
 import json
 app = json.loads('''$app_state''')
@@ -323,10 +411,18 @@ if missing:
 print(f'  OBO scopes intact: {sorted(scopes)}')
 " || die "OBO scopes missing after deploy"
   else
-    die "unable to read app state for OBO verification"
+    "$PYTHON" -c "
+import json
+app = json.loads('''$app_state''')
+scopes = app.get('user_api_scopes')
+if scopes:
+    raise SystemExit(f'demo App-SP mode expected no user_api_scopes, got {scopes}')
+print('  OBO disabled for demo; user_api_scopes unset')
+"
+    grant_app_sp_endpoint_query "$app_state"
   fi
 else
-  die "resources/consumers/analyst.app.yml must declare user_api_scopes; OBO is mandatory"
+  die "unable to read app state for OBO verification"
 fi
 
 # ─── Step 6: smoke check ─────────────────────────────────────────────────────

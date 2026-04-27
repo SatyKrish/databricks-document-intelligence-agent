@@ -37,8 +37,11 @@ variables:
     description: UC group granted SELECT/USE on the catalog/schema
     default: account users
   agent_endpoint_name:
-    description: Agent Bricks Supervisor serving endpoint name resolved by bootstrap_agent_bricks.py
+    description: Agent Bricks Supervisor serving endpoint name resolved by agent.document_intelligence_agent
     default: UNSET_AGENT_BRICKS_ENDPOINT
+  app_obo_required:
+    description: Whether the Databricks App requires user-token passthrough for Agent Bricks calls
+    default: "true"
 
 targets:
   demo:
@@ -53,6 +56,7 @@ targets:
       catalog: workspace
       schema: docintel_10k_demo
       lakebase_instance: docintel-demo-state-v1
+      app_obo_required: "false"
     resources:
       pipelines:
         doc_intel_pipeline:
@@ -78,3 +82,12 @@ targets:
       schema: docintel_10k
       lakebase_instance: docintel-prod-state
       lakebase_stopped: false
+      app_obo_required: "true"
+    resources:
+      apps:
+        analyst_app:
+          user_api_scopes:
+            - serving.serving-endpoints
+            - sql
+            - iam.access-control:read
+            - iam.current-user:read

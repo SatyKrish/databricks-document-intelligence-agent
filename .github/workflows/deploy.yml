@@ -72,25 +72,28 @@ jobs:
         # transition it back through provisioning; the catalog/app bindings
         # need it AVAILABLE before the next bundle run touches them.
         run: |
-          python -c "
-import json, os, sys, time, subprocess
-name = os.environ.get('LAKEBASE_NAME') or 'docintel-demo-state-v1'
-deadline = time.time() + 600
-while True:
-    out = subprocess.run(['databricks','api','get','/api/2.0/database/instances','--output','json'],
-                         capture_output=True, text=True)
-    try:
-        d = json.loads(out.stdout)
-    except Exception:
-        d = {}
-    state = next((i.get('state') for i in d.get('database_instances',[]) if i.get('name')==name), 'UNKNOWN')
-    print(f'lakebase state: {state}')
-    if state == 'AVAILABLE':
-        sys.exit(0)
-    if time.time() >= deadline:
-        sys.exit(f'Lakebase {name} did not reach AVAILABLE within 600s (state={state})')
-    time.sleep(15)
-"
+          python - <<'PY'
+          import json, os, sys, time, subprocess
+          name = os.environ.get('LAKEBASE_NAME') or 'docintel-demo-state-v1'
+          deadline = time.time() + 600
+          while True:
+              out = subprocess.run(
+                  ['databricks', 'api', 'get', '/api/2.0/database/instances', '--output', 'json'],
+                  capture_output=True,
+                  text=True,
+              )
+              try:
+                  d = json.loads(out.stdout)
+              except Exception:
+                  d = {}
+              state = next((i.get('state') for i in d.get('database_instances', []) if i.get('name') == name), 'UNKNOWN')
+              print(f'lakebase state: {state}')
+              if state == 'AVAILABLE':
+                  sys.exit(0)
+              if time.time() >= deadline:
+                  sys.exit(f'Lakebase {name} did not reach AVAILABLE within 600s (state={state})')
+              time.sleep(15)
+          PY
         env:
           LAKEBASE_NAME: ${{ vars.DOCINTEL_LAKEBASE_NAME || 'docintel-demo-state-v1' }}
 
@@ -104,7 +107,7 @@ while True:
           databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" doc_intel_pipeline
           python scripts/wait_for_kpis.py --min-rows 3 --timeout 900
           databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" --var "agent_endpoint_name=$AGENT_ENDPOINT_NAME" index_refresh
-          python scripts/bootstrap_agent_bricks.py \
+          python -m agent.document_intelligence_agent \
             --target demo \
             --catalog "$DOCINTEL_CATALOG" \
             --schema "$DOCINTEL_SCHEMA" \
@@ -130,19 +133,38 @@ while True:
         # `bundle deploy` alone uploads code but doesn't apply config/restart.
         run: databricks bundle run -t demo --var "warehouse_id=$DOCINTEL_WAREHOUSE_ID" --var "agent_endpoint_name=$AGENT_ENDPOINT_NAME" analyst_app
 
-      - name: Verify OBO scopes survived deploy
-        # `bundle run` may wipe user_api_scopes (documented destructive-update
-        # behavior). Fail loudly because user-token passthrough is mandatory.
+      - name: Verify app auth mode and endpoint grants
         run: |
           databricks apps get doc-intel-analyst-demo --output json > /tmp/app.json
-          python -c "
-import json
-app = json.load(open('/tmp/app.json'))
-scopes = set(app.get('user_api_scopes') or [])
-required = {'serving.serving-endpoints', 'sql'}
-missing = required - scopes
-assert not missing, f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})'
-"
+          app_obo_required="$(python -c "import yaml; d=yaml.safe_load(open('databricks.yml')); default=d.get('variables',{}).get('app_obo_required',{}).get('default','true'); value=d.get('targets',{}).get('demo',{}).get('variables',{}).get('app_obo_required', default); print(str(value).lower())")"
+          lakebase_name="$(python -c "import yaml; d=yaml.safe_load(open('databricks.yml')); print(d.get('targets',{}).get('demo',{}).get('variables',{}).get('lakebase_instance','docintel-demo-state-v1'))")"
+          python -c "import json; app=json.load(open('/tmp/app.json')); vals=[str(app.get(k)) for k in ('service_principal_client_id','service_principal_name','service_principal_id') if app.get(k) is not None]; print('\n'.join(dict.fromkeys(v for v in vals if v)))" > /tmp/app-sp-candidates.txt
+          db_granted=0
+          while IFS= read -r principal; do
+            grant_json="$(python -c "import json, sys; print(json.dumps({'access_control_list':[{'service_principal_name':sys.argv[1],'permission_level':'CAN_USE'}]}))" "$principal")"
+            if databricks permissions update database-instances "$lakebase_name" --json "$grant_json"; then
+              db_granted=1
+              break
+            fi
+          done < /tmp/app-sp-candidates.txt
+          test "$db_granted" = "1"
+          if [ "$app_obo_required" = "true" ]; then
+            # `bundle run` may wipe user_api_scopes (documented destructive-update
+            # behavior). Fail loudly if required user scopes are missing.
+            python -c "import json; app=json.load(open('/tmp/app.json')); scopes=set(app.get('user_api_scopes') or []); required={'serving.serving-endpoints','sql'}; missing=required-scopes; assert not missing, f'OBO scopes missing: {sorted(missing)} (got {sorted(scopes)})'"
+          else
+            python -c "import json; app=json.load(open('/tmp/app.json')); scopes=app.get('user_api_scopes'); assert not scopes, f'demo App-SP mode expected no user_api_scopes, got {scopes}'"
+            endpoint_id="$(databricks serving-endpoints get "$AGENT_ENDPOINT_NAME" --output json | python -c "import json, sys; e=json.load(sys.stdin); print(e.get('id') or e.get('name'))")"
+            granted=0
+            while IFS= read -r principal; do
+              grant_json="$(python -c "import json, sys; print(json.dumps({'access_control_list':[{'service_principal_name':sys.argv[1],'permission_level':'CAN_QUERY'}]}))" "$principal")"
+              if databricks permissions update serving-endpoints "$endpoint_id" --json "$grant_json"; then
+                granted=1
+                break
+              fi
+            done < /tmp/app-sp-candidates.txt
+            test "$granted" = "1"
+          fi
 
       - name: CLEARS evaluation gate
         run: python evals/clears_eval.py --endpoint "$AGENT_ENDPOINT_NAME" --dataset evals/dataset.jsonl

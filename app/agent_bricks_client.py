@@ -25,7 +25,7 @@ def invoke_agent_endpoint(
     url = f"{host}/serving-endpoints/{endpoint_name}/invocations"
     body = json.dumps({"input": [{"role": "user", "content": question}]}).encode("utf-8")
     # For an OBO WorkspaceClient built with Config(token=<x-forwarded-access-token>),
-    # authenticate() emits that user token. There is no App SP fallback here.
+    # authenticate() emits that user token.
     headers = {
         "Content-Type": "application/json",
         "X-Request-ID": client_request_id or str(uuid.uuid4()),

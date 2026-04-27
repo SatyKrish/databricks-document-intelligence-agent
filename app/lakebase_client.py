@@ -2,8 +2,9 @@
 
 Persists conversation history, query logs, and feedback per the contracts in
 `specs/001-doc-intel-10k/contracts/`. The Databricks App database resource
-binding exposes standard Postgres env vars (PGHOST, PGPORT, PGUSER,
-PGPASSWORD, PGDATABASE).
+binding exposes Postgres connection env vars (PGHOST, PGPORT, PGUSER,
+PGDATABASE, PGSSLMODE). Lakebase OAuth passwords are minted on demand with the
+Databricks SDK.
 
 Databricks Apps + Lakebase docs (https://docs.databricks.com/aws/en/oltp/) —
 initialize schema at
@@ -24,20 +25,35 @@ from contextlib import contextmanager
 from typing import Iterator
 
 import psycopg
+from psycopg import sql
+from databricks.sdk import WorkspaceClient
 
 _log = logging.getLogger(__name__)
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS conversation_history (
+def _lakebase_schema() -> str:
+    return os.environ.get("DOCINTEL_LAKEBASE_SCHEMA", "docintel_app")
+
+
+def _table(name: str) -> sql.Identifier:
+    return sql.Identifier(_lakebase_schema(), name)
+
+
+def _schema_ddl() -> sql.Composed:
+    conversation_history = _table("conversation_history")
+    query_logs = _table("query_logs")
+    feedback = _table("feedback")
+    return sql.SQL(
+        """
+CREATE TABLE IF NOT EXISTS {conversation_history} (
   conversation_id UUID PRIMARY KEY,
   user_email TEXT NOT NULL,
   started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_turn_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS query_logs (
+CREATE TABLE IF NOT EXISTS {query_logs} (
   turn_id UUID PRIMARY KEY,
-  conversation_id UUID REFERENCES conversation_history(conversation_id),
+  conversation_id UUID REFERENCES {conversation_history}(conversation_id),
   question TEXT NOT NULL,
   answer TEXT NOT NULL,
   citations JSONB NOT NULL,
@@ -45,15 +61,20 @@ CREATE TABLE IF NOT EXISTS query_logs (
   agent_path TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS feedback (
+CREATE TABLE IF NOT EXISTS {feedback} (
   feedback_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  turn_id UUID REFERENCES query_logs(turn_id),
+  turn_id UUID REFERENCES {query_logs}(turn_id),
   user_email TEXT NOT NULL,
   rating TEXT NOT NULL CHECK (rating IN ('up','down')),
   comment TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 """
+    ).format(
+        conversation_history=conversation_history,
+        query_logs=query_logs,
+        feedback=feedback,
+    )
 
 
 @contextmanager
@@ -63,24 +84,40 @@ def _conn() -> Iterator[psycopg.Connection]:
         conninfo = dsn
         kwargs = {}
     else:
-        required = ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")
+        required = ("PGHOST", "PGPORT", "PGUSER", "PGDATABASE")
         missing = [name for name in required if not os.environ.get(name)]
         if missing:
             raise RuntimeError(f"Lakebase binding missing Postgres env vars: {', '.join(missing)}")
+        password = os.environ.get("PGPASSWORD") or _generate_lakebase_password()
         conninfo = ""
         kwargs = {
             "host": os.environ["PGHOST"],
             "port": os.environ["PGPORT"],
             "user": os.environ["PGUSER"],
-            "password": os.environ["PGPASSWORD"],
+            "password": password,
             "dbname": os.environ["PGDATABASE"],
+            "sslmode": os.environ.get("PGSSLMODE", "require"),
         }
     with psycopg.connect(conninfo, autocommit=True, **kwargs) as c:
         yield c
 
 
+def _generate_lakebase_password() -> str:
+    instance_name = os.environ.get("DOCINTEL_LAKEBASE_INSTANCE") or os.environ.get("PGDATABASE")
+    if not instance_name:
+        raise RuntimeError("Lakebase OAuth credential requires DOCINTEL_LAKEBASE_INSTANCE or PGDATABASE")
+    credential = WorkspaceClient().database.generate_database_credential(
+        request_id=str(uuid.uuid4()),
+        instance_names=[instance_name],
+    )
+    token = getattr(credential, "token", None)
+    if not token:
+        raise RuntimeError("Lakebase OAuth credential response did not include a token")
+    return token
+
+
 def init_schema() -> None:
-    """Idempotent CREATE TABLE IF NOT EXISTS. Logs the connected role so
+    """Idempotent CREATE SCHEMA/TABLE IF NOT EXISTS. Logs the connected role so
     deployed-vs-local identity divergence is debuggable from app logs.
     """
     with _conn() as c, c.cursor() as cur:
@@ -97,14 +134,19 @@ def init_schema() -> None:
             )
         else:
             _log.info("Lakebase init connected as %r", connected_user)
-        cur.execute(_SCHEMA)
+        cur.execute(
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(_lakebase_schema()))
+        )
+        cur.execute(_schema_ddl())
 
 
 def ensure_conversation(conversation_id: uuid.UUID, user_email: str) -> None:
     with _conn() as c, c.cursor() as cur:
         cur.execute(
-            "INSERT INTO conversation_history (conversation_id, user_email) VALUES (%s, %s) "
-            "ON CONFLICT (conversation_id) DO UPDATE SET last_turn_at = now()",
+            sql.SQL(
+                "INSERT INTO {table} (conversation_id, user_email) VALUES (%s, %s) "
+                "ON CONFLICT (conversation_id) DO UPDATE SET last_turn_at = now()"
+            ).format(table=_table("conversation_history")),
             (conversation_id, user_email),
         )
 
@@ -112,8 +154,10 @@ def ensure_conversation(conversation_id: uuid.UUID, user_email: str) -> None:
 def log_turn(*, turn_id: str, conversation_id: uuid.UUID, response: dict, question: str) -> None:
     with _conn() as c, c.cursor() as cur:
         cur.execute(
-            "INSERT INTO query_logs (turn_id, conversation_id, question, answer, citations, latency_ms, agent_path) "
-            "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)",
+            sql.SQL(
+                "INSERT INTO {table} (turn_id, conversation_id, question, answer, citations, latency_ms, agent_path) "
+                "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)"
+            ).format(table=_table("query_logs")),
             (
                 turn_id,
                 conversation_id,
@@ -129,6 +173,8 @@ def log_turn(*, turn_id: str, conversation_id: uuid.UUID, response: dict, questi
 def write_feedback(*, turn_id: str, user_email: str, rating: str, comment: str | None) -> None:
     with _conn() as c, c.cursor() as cur:
         cur.execute(
-            "INSERT INTO feedback (turn_id, user_email, rating, comment) VALUES (%s, %s, %s, %s)",
+            sql.SQL("INSERT INTO {table} (turn_id, user_email, rating, comment) VALUES (%s, %s, %s, %s)").format(
+                table=_table("feedback")
+            ),
             (turn_id, user_email, rating, comment),
         )

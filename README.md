@@ -29,7 +29,7 @@ A **Databricks-native document intelligence + agent** stack: parse PDFs once wit
                                            [2], regulation [3]…"
 ```
 
-For motivation, architecture diagrams, the Spec-Kit + Claude Code build workflow, and the chicken-egg deploy-ordering story, see [**`docs/design.md`**](./docs/design.md). For day-2 ops, see [**`docs/runbook.md`**](./docs/runbook.md).
+For architecture and deploy ordering, see [**`docs/design.md`**](./docs/design.md). For operations, validation, and troubleshooting, see [**`docs/runbook.md`**](./docs/runbook.md).
 
 ---
 
@@ -37,6 +37,7 @@ For motivation, architecture diagrams, the Spec-Kit + Claude Code build workflow
 
 - [Features](#features)
 - [Readiness levels](#readiness-levels)
+- [How Agent Bricks is used](#how-agent-bricks-is-used)
 - [Prerequisites](#prerequisites)
 - [Getting started](#getting-started)
 - [CLEARS quality gate](#clears-quality-gate)
@@ -55,7 +56,7 @@ For motivation, architecture diagrams, the Spec-Kit + Claude Code build workflow
 ## Features
 
 - **End-to-end document intelligence pipeline** — Auto Loader ingest → `ai_parse_document` → section explosion → `ai_classify` + `ai_extract` → 5-dim quality rubric → Vector Search Delta-Sync index (the endpoint is DAB-managed; the index is created/synced by `jobs/index_refresh/sync_index.py`). SQL-only pipeline (Lakeflow Spark Declarative Pipelines).
-- **Cited-answer agent** — Agent Bricks-first runtime: Knowledge Assistant for cited document Q&A, Supervisor Agent for cross-company orchestration, and a deterministic KPI tool for structured comparisons. No custom pyfunc, retrieval loop, or supervisor runtime is retained.
+- **Cited-answer agent** — Agent Bricks Knowledge Assistant for cited document Q&A, Supervisor Agent for cross-company orchestration, and a deterministic KPI tool for structured comparisons.
 - **Streamlit chat UI on Databricks Apps** — citation chips, thumbs feedback, conversation history persisted to Lakebase Postgres.
 - **Eval-gated promotion** — `mlflow.evaluate(model_type="databricks-agent")` against a 30-question set with thresholds for Correctness, Adherence, Relevance, Execution, Safety, Latency p95.
 - **Reproducible synthetic corpus** — `samples/synthesize.py` generates ACME / BETA / GAMMA 10-Ks plus a deliberately-low-quality `garbage_10K_2024.pdf` for the rubric-exclusion test (SC-006). No EDGAR dependency in CI.
@@ -71,6 +72,31 @@ For motivation, architecture diagrams, the Spec-Kit + Claude Code build workflow
 | Production-ready | Analysts can use it under governed identity and operational SLOs | Pilot-ready + app-level OBO enabled, audit proof, alerts/dashboards, rollback tested |
 
 Full checklists in [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
+
+> Latest demo status, 2026-04-26: Agent Bricks bootstrap, Databricks App deploy, direct Supervisor endpoint smoke, and Vector Search index-refresh smoke passed. Reference-ready remains blocked by CLEARS thresholds. Prod readiness still requires user-token passthrough/OBO evidence. See [`VALIDATION.md`](./VALIDATION.md).
+
+---
+
+## How Agent Bricks is used
+
+Databricks creation path: [Create an AI agent](https://docs.databricks.com/aws/en/generative-ai/agent-framework/create-agent) → Knowledge Assistant for document Q&A, with Supervisor Agent coordinating hosted tools.
+
+The Agent Bricks path is:
+
+1. `jobs/index_refresh/sync_index.py` creates/syncs the Mosaic AI Vector Search Delta-Sync index over `gold_filing_sections_indexable`.
+2. `agent/document_intelligence_agent.py` creates or updates the Agent Bricks Knowledge Assistant with that Vector Search index as its knowledge source. The source uses `summary` as the searchable text column and `filename` as the document URI column.
+3. `agent/document_intelligence_agent.py` creates or updates the UC SQL function `lookup_10k_kpis`.
+4. `agent/document_intelligence_agent.py` creates or updates the Agent Bricks Supervisor Agent with two tools: the Knowledge Assistant for cited document Q&A and the UC function for deterministic KPI lookups.
+5. Agent Bricks generates concrete serving endpoint names. Resolve the live Supervisor endpoint with `./scripts/resolve-agent-endpoint.sh <target>`.
+6. The Databricks App receives the resolved endpoint through the `agent_endpoint_name` bundle variable as `DOCINTEL_AGENT_ENDPOINT`.
+7. The app invokes `POST /serving-endpoints/{endpoint}/invocations` directly. Prod uses each user's OBO token. Demo uses the App service principal when `DOCINTEL_OBO_REQUIRED=false`. `WorkspaceClient.serving_endpoints.query()` is not used for Agent Bricks invocation because validation showed it did not preserve the needed Agent Bricks response shape.
+8. Knowledge Assistant citations currently arrive as markdown footnotes in Agent Bricks output messages. `app/agent_bricks_response.py` normalizes the final answer and extracts citation chips from those footnotes.
+
+Useful Databricks references:
+
+- [Create an AI agent](https://docs.databricks.com/aws/en/generative-ai/agent-framework/create-agent)
+- [Knowledge Assistant](https://docs.databricks.com/aws/en/generative-ai/agent-bricks/knowledge-assistant)
+- [Supervisor Agent](https://docs.databricks.com/aws/en/generative-ai/agent-bricks/multi-agent-supervisor)
 
 ---
 
@@ -101,7 +127,7 @@ You need a workspace with **all** of the following enabled:
 
 - Serverless SQL warehouse (AI Functions GA — `ai_parse_document`, `ai_classify`, `ai_extract`, `ai_query`)
 - Mosaic AI Vector Search (endpoint + Delta-Sync index)
-- Agent Bricks (Knowledge Assistant, Supervisor Agent, Custom Agents on Apps)
+- Agent Bricks Knowledge Assistant and Supervisor Agent
 - AI Gateway with OBO / identity enforcement
 - Lakebase Postgres (preview / GA depending on region)
 - Databricks Apps (Streamlit runtime)
@@ -110,7 +136,7 @@ You need a workspace with **all** of the following enabled:
 
 **Required for production identity:**
 
-- Databricks Apps **user token passthrough** (workspace admin setting). The app must not fall back to broad service-principal reads — see [`SECURITY.md`](./SECURITY.md).
+- Databricks Apps **user token passthrough** (workspace admin setting). Prod requires user-scoped Agent Bricks calls — see [`SECURITY.md`](./SECURITY.md).
 
 ### Free trial signup
 
@@ -188,24 +214,34 @@ In the workspace UI: **Apps → `doc-intel-analyst-demo`**. Ask:
 
 You should see a grounded answer with citation chips linking to `ACME_10K_2024.pdf` / `Risk`.
 
+Example deployed Databricks App validation:
+
+![Deployed 10-K Analyst app showing an ACME revenue answer with a structured KPI citation chip](./docs/databricks-app-dogfood.png)
+
 ### 7. Steady-state deploys
 
 After the first bring-up, iteration depends on what changed:
 
 ```bash
 # YAML / pipeline / job / app config changes
-databricks bundle deploy -t demo
-databricks bundle run -t demo analyst_app                      # apply app config + restart
+AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
+databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
 
 # Agent Bricks configuration / tool glue changes
-databricks bundle deploy -t demo
-databricks bundle run -t demo analyst_app
+DOCINTEL_CATALOG=workspace \
+DOCINTEL_SCHEMA=docintel_10k_demo \
+DOCINTEL_WAREHOUSE_ID=<from-step-2> \
+python -m agent.document_intelligence_agent --target demo
+AGENT_ENDPOINT_NAME="$(./scripts/resolve-agent-endpoint.sh demo)"
+databricks bundle deploy -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}"
+databricks bundle run -t demo --var "agent_endpoint_name=${AGENT_ENDPOINT_NAME}" analyst_app
 
 # Pipeline SQL changes that need to re-process existing filings
 databricks bundle run -t demo doc_intel_pipeline
 ```
 
-You can also re-run `./scripts/bootstrap-demo.sh` — it auto-detects steady-state and does the full cycle (deploy → refresh data → register/promote → app run → grants → smoke) in one command.
+You can also re-run `./scripts/bootstrap-demo.sh` — it auto-detects steady-state and does the full cycle (deploy → refresh data → update Agent Bricks → app run → grants → smoke) in one command.
 
 For a guided 30-minute tour, see [`specs/001-doc-intel-10k/quickstart.md`](./specs/001-doc-intel-10k/quickstart.md).
 
@@ -235,7 +271,7 @@ Before any deploy reaches production, an evaluation must pass (constitution prin
 
 The bar is hard-coded; changing it requires editing `.specify/memory/constitution.md`, which is its own small ceremony (PR + version bump + Sync Impact Report).
 
-Implementation uses `mlflow.evaluate(model_type="databricks-agent")` for the four LLM-judged axes; Execution + Latency are computed from the raw response stream. Per-row Correctness is sliced from `result.tables['eval_results']` for the SC-002/SC-003 P2 vs P3 thresholds.
+Implementation uses `mlflow.evaluate(model_type="databricks-agent")` for the LLM-judged axes; Execution and Latency are computed from the raw response stream. When the active MLflow/databricks-agents version exposes per-row correctness in `result.tables['eval_results']`, the runner also logs SC-002/SC-003 P2 vs P3 slices. Current 1.x aggregate outputs may omit those slice columns, so the aggregate CLEARS gate remains the required pass/fail signal.
 
 ---
 
@@ -255,6 +291,8 @@ Implementation uses `mlflow.evaluate(model_type="databricks-agent")` for the fou
 | `quality_threshold` | `22` | Section quality cutoff (0-30) for index inclusion |
 | `max_pdf_bytes` | `52428800` (50 MB) | Reject filings larger than this |
 | `analyst_group` | `account users` | UC group granted SELECT/USE on schema, READ/WRITE on volume |
+| `agent_endpoint_name` | `UNSET_AGENT_BRICKS_ENDPOINT` | Generated Agent Bricks Supervisor endpoint resolved by `scripts/resolve-agent-endpoint.sh`; pass it on deploy/app-run commands after bootstrap |
+| `app_obo_required` | `true` (prod) / `false` (demo) | Controls Databricks Apps user-token passthrough. Demo can use the App SP when passthrough is unavailable; prod requires OBO. |
 
 Override via `--var name=value` on any `bundle` command.
 
@@ -288,9 +326,9 @@ bash -n scripts/bootstrap-demo.sh
 
 # Compile checks for all modified Python
 .venv/bin/python -m py_compile \
-  agent/tools.py \
-  app/app.py app/lakebase_client.py \
-  evals/clears_eval.py scripts/bootstrap_agent_bricks.py \
+  agent/document_intelligence_agent.py agent/tools.py \
+  app/app.py app/agent_bricks_client.py app/agent_bricks_response.py app/lakebase_client.py \
+  evals/clears_eval.py \
   scripts/wait_for_kpis.py samples/synthesize.py
 ```
 
@@ -303,9 +341,9 @@ End-to-end is exercised by [`./scripts/bootstrap-demo.sh`](./scripts/bootstrap-d
 | Path | When |
 |---|---|
 | `./scripts/bootstrap-demo.sh` | Fresh-workspace bring-up (or after `bundle destroy`). Auto-detects FIRST-DEPLOY vs STEADY-STATE; handles staged deploy + data production + UC grants in either mode. |
-| `databricks bundle deploy -t demo` | YAML / pipeline / job / app config changes after the first bring-up. |
-| `databricks bundle run -t demo analyst_app` | After any change to `app/` or `resources/consumers/analyst.app.yml` — required to apply runtime config + restart the app. |
-| `databricks bundle deploy -t prod --var service_principal_id=<sp-app-id>` | Production deploy, run as the prod SP. |
+| `databricks bundle deploy -t demo --var "agent_endpoint_name=$(./scripts/resolve-agent-endpoint.sh demo)"` | YAML / pipeline / job / app config changes after the first bring-up. |
+| `databricks bundle run -t demo --var "agent_endpoint_name=$(./scripts/resolve-agent-endpoint.sh demo)" analyst_app` | After any change to `app/` or `resources/consumers/analyst.app.yml` — required to apply runtime config + restart the app. |
+| `databricks bundle deploy -t prod --var service_principal_id=<sp-app-id> --var "agent_endpoint_name=$(./scripts/resolve-agent-endpoint.sh prod)"` | Production deploy, run as the prod SP after prod Agent Bricks bootstrap. |
 | GitHub Actions on push to `main` | Steady-state CI: full `bundle deploy` → wait for Lakebase AVAILABLE → upload samples + run pipeline → Agent Bricks / AI Gateway validation → UC grants → `bundle run analyst_app` → CLEARS eval gate. (The first-ever bring-up of a workspace must be done locally with `./scripts/bootstrap-demo.sh`.) |
 
 For day-2 ops (Agent Bricks configuration validation, debugging low quality scores, inspecting CLEARS metrics in MLflow), see [`docs/runbook.md`](./docs/runbook.md). For the production-readiness checklist, see [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md).
@@ -349,7 +387,7 @@ This is a production-oriented reference implementation with conservative scale d
 | Compute | CPU only | constitution add'l constraints |
 | Languages | English filings | implicit (foundation model) |
 | Eval set size | 30 questions | spec clarification |
-| OBO end-to-end | Requires workspace-level `Databricks Apps - user token passthrough` feature | [`SECURITY.md`](./SECURITY.md) |
+| Prod OBO end-to-end | Requires workspace-level `Databricks Apps - user token passthrough` feature | [`SECURITY.md`](./SECURITY.md) |
 
 Latency SLOs: P95 ≤ 8s for single-filing, ≤ 20s for cross-company. End-to-end pipeline ≤ 10 min P95 on a 30 MB PDF.
 
@@ -363,7 +401,7 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for local setup, the spec-kit workflo
 
 ## Security
 
-See [`SECURITY.md`](./SECURITY.md) for the mandatory end-to-end OBO identity model, required UC grants, secrets-handling guidance, and how to report security issues in a fork or deployment.
+See [`SECURITY.md`](./SECURITY.md) for the target-specific identity model, required UC grants, secrets-handling guidance, and how to report security issues in a fork or deployment.
 
 ## License
 

@@ -1,6 +1,6 @@
 # Phase 1 Data Model
 
-All Delta tables live under the bundle-parameterized `${var.catalog}.${var.schema}`. Lakebase tables live in the bundle-managed Lakebase database `${var.catalog}_state`.
+All Delta tables live under the bundle-parameterized `${var.catalog}.${var.schema}`. Lakebase tables live in schema `docintel_app` inside the bundle-managed Lakebase database instance `${var.lakebase_instance}`, exposed to SQL dashboards through the UC database catalog `${var.schema}_state`.
 
 ## Bronze
 
@@ -99,7 +99,7 @@ A view `gold_filing_sections_with_quality` joins sections + quality and is the s
 | Column | Type | Notes |
 |---|---|---|
 | `conversation_id` | UUID PK | One row per session |
-| `user_email` | STRING | From identity passthrough |
+| `user_email` | STRING | From Databricks Apps identity headers; local runs may use `DOCINTEL_USER_EMAIL` |
 | `started_at` | TIMESTAMPTZ | |
 | `last_turn_at` | TIMESTAMPTZ | |
 
@@ -149,7 +149,7 @@ PDF in volume
                  └─ ai_query rubric → gold_filing_quality (quality_score)
                       └─ quality_score threshold → Vector Search index sync
                            └─ Agent Bricks Knowledge Assistant + Supervisor Agent
-                                └─ AI Gateway + OBO
+                                └─ AI Gateway + target auth mode
                                      └─ Streamlit App turn
                                           └─ Lakebase query_logs + feedback
 ```

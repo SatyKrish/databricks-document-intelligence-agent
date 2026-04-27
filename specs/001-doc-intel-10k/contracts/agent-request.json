@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Agent Endpoint Request",
-  "description": "App-level normalized request sent to the Agent Bricks Supervisor endpoint. AI Gateway and Databricks Apps OBO add identity automatically.",
+  "description": "App-level normalized request sent to the Agent Bricks Supervisor endpoint. Prod uses Databricks Apps OBO identity; demo may use the App service principal.",
   "type": "object",
   "required": ["question"],
   "properties": {

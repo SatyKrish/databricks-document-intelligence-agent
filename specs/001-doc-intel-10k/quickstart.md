@@ -1,11 +1,11 @@
 # Quickstart: Deploy and Test the 10-K Analyst
 
-Goal: from a clean clone, stand up the entire stack on the Databricks `demo` target and verify P1, P2, P3 acceptance scenarios in 15–25 minutes.
+Goal: from a clean clone, stand up the entire stack on the Databricks `demo` target and run the P1, P2, and P3 acceptance checks in 15–25 minutes.
 
 ## Prerequisites
 
 - macOS or Linux, `python` 3.11+, `git`, `databricks` CLI ≥ 0.298 (`brew install databricks/tap/databricks`)
-- A Databricks workspace with: serverless SQL warehouse (AI Functions GA), Mosaic AI Vector Search, Agent Bricks Knowledge Assistant and Supervisor Agent, AI Gateway, Databricks Apps user-token passthrough, Unity Catalog, and Lakebase enabled
+- A Databricks workspace with: serverless SQL warehouse (AI Functions GA), Mosaic AI Vector Search, Agent Bricks Knowledge Assistant and Supervisor Agent, AI Gateway, Databricks Apps, Unity Catalog, and Lakebase enabled. Prod also requires Databricks Apps user-token passthrough.
 - An auth profile (`databricks auth login --host <workspace-url>` once); verify with `databricks auth profiles`
 - Local virtualenv: `python -m venv .venv && .venv/bin/pip install -r agent/requirements.txt -r evals/requirements.txt`
 
@@ -98,7 +98,7 @@ Note: the Lakebase instance enters a soft-delete state for ~7 days during which 
 |---|---|---|
 | `bundle validate` errors on `ai_parse_document` | Workspace lacks AI Functions GA | Move SQL warehouse to a recent serverless channel |
 | Vector Search index sync stuck | Embedding endpoint not provisioned | Provision `databricks-bge-large-en` or override `var.embedding_model_endpoint_name` |
-| Agent endpoint 401 from App | OBO not plumbed end-to-end | Verify `app/app.py:_user_client` reads `x-forwarded-access-token` and the App's `user_api_scopes` includes `serving.serving-endpoints` (workspace must have user-token-passthrough enabled — see `docs/runbook.md` §"Verifying end-to-end OBO") |
+| Agent endpoint 401 from App | Target auth mode does not have endpoint access | Demo: verify App SP `CAN_QUERY` was granted. Prod: verify `app/app.py:_user_client` reads `x-forwarded-access-token` and the target `user_api_scopes` include `serving.serving-endpoints` |
 | CLEARS Latency axis fails | Agent Bricks orchestration or Knowledge Assistant source is too broad | Narrow the Knowledge Assistant source, tune Supervisor instructions, or reduce structured-tool fan-out |
 | Bootstrap blocks on Lakebase soft-delete | `lakebase_instance` name held by retention | Bump suffix in `databricks.yml` and retry |
-| App deploy fails on OBO scopes | Workspace lacks user-token-passthrough feature | Workspace admin enables the feature; this is a production prerequisite |
+| App deploy fails on OBO scopes | Workspace lacks user-token-passthrough feature | Workspace admin enables the feature for prod. Demo should use `app_obo_required=false` unless validating OBO |

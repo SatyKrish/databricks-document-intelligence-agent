@@ -2,32 +2,24 @@
 
 ## Supported Security Posture
 
-This reference is designed for Databricks workspaces using Unity Catalog, Agent Bricks, AI Gateway, Databricks Apps resource bindings, and mandatory end-to-end on-behalf-of (OBO) user identity.
-
-## Identity Modes
-
-| Mode | Use | Production row-level security |
-|---|---|---|
-| End-to-end OBO | Demo and production analyst use | Yes, after audit verification |
-
-Service-principal fallback is not supported for the agent path. If Databricks Apps user-token passthrough, Agent Bricks OBO, or AI Gateway identity enforcement is unavailable, deployment must fail with an actionable prerequisite error.
+This reference is designed for Databricks workspaces using Unity Catalog, Agent Bricks, AI Gateway, Databricks Apps resource bindings, and end-to-end on-behalf-of (OBO) user identity in prod. Demo can run with `app_obo_required=false` when the workspace does not have Databricks Apps user-token passthrough enabled. In that mode the App service principal invokes Agent Bricks and is granted `CAN_QUERY` after deploy.
 
 ## Enabling End-To-End OBO
 
-1. Workspace admin enables Databricks Apps user-token passthrough.
-2. Declare the required `user_api_scopes` in `resources/consumers/analyst.app.yml`.
-3. Redeploy and run the app resource.
+1. Set `app_obo_required=true` for the target. Prod does this by default.
+2. Workspace admin enables Databricks Apps user-token passthrough.
+3. Redeploy and run the app resource. The deploy fails if the workspace cannot grant the declared `user_api_scopes`.
 4. Verify `serving.serving-endpoints` and `sql` scopes are present after deployment.
 5. Verify audit logs show downstream calls under the invoking user where required.
 
-Agent Bricks / AI Gateway must enforce downstream access to document Q&A, SQL tools, models, and any external tools under the invoking user's identity. The previous custom MLflow auth-policy path has been removed from the production implementation.
+With OBO enabled, Agent Bricks / AI Gateway enforce downstream access to document Q&A, SQL tools, models, and any external tools under the invoking user's identity.
 
 ## Secrets And Credentials
 
 - Do not commit Databricks tokens, service-principal secrets, Postgres passwords, or local app settings.
 - `.claude/settings.local.json`, `.databricks/`, `.venv/`, MLflow local artifacts, Python caches, and local skill bundles are ignored.
 - Use GitHub Actions secrets for `DATABRICKS_HOST` and `DATABRICKS_TOKEN`.
-- Use Databricks resource bindings for app access to Lakebase and serving endpoints.
+- Use Databricks resource bindings for Lakebase. Agent Bricks endpoint access is granted directly to users or the App service principal, depending on target auth mode.
 
 ## Required Grants
 
