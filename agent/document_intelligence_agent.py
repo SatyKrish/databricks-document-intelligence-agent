@@ -254,8 +254,10 @@ def _ensure_supervisor(
     instructions = (
         "Use the Knowledge Assistant for narrative or section-level questions. "
         "Use the Unity Catalog KPI function for structured financial metrics "
-        "and cross-company comparisons. Do not invent figures; cite the filing "
-        "source or state that the corpus does not contain the answer."
+        "and cross-company comparisons. For KPI function answers, include the "
+        "source filename and extraction confidence in the final answer. Do not "
+        "invent figures; cite the filing source or state that the corpus does "
+        "not contain the answer."
     )
     desired = SupervisorAgent(
         display_name=display_name,

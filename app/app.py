@@ -92,7 +92,7 @@ def _ensure_session() -> tuple[str, str]:
 
 def _render_citations(citations: list[dict]) -> None:
     if not citations:
-        st.caption("No citations — the agent did not find a grounded source.")
+        st.caption("No citation chips returned for this response.")
         return
     cols = st.columns(min(len(citations), 4))
     for i, c in enumerate(citations[:4]):

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import uuid
 import re
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,6 +16,19 @@ from typing import Any
 # without a parseable filename and [] when no footnotes are present.
 APP_EMPTY_TEXT = "The Agent Bricks endpoint returned a response without displayable text."
 FILENAME_RE = re.compile(r"_([A-Za-z0-9][A-Za-z0-9_.-]*\.pdf)_")
+PDF_FILENAME_RE = re.compile(r"\b([A-Za-z0-9][A-Za-z0-9_.-]*\.pdf)\b")
+CONFIDENCE_PERCENT_RE = re.compile(
+    r"\b(?:confidence|extraction[_ -]?confidence)\b[^\d%]{0,40}(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
+UNGROUNDED_RE = re.compile(
+    r"\b("
+    r"cannot determine|could not find|does not contain(?: a)? grounded answer|"
+    r"no grounded answer|no source|not available|not found|unable to determine|"
+    r"without a grounded source"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _output_text_groups(payload: Mapping[str, Any]) -> list[str]:
@@ -63,16 +76,61 @@ def extract_text(payload: Mapping[str, Any], *, empty_text: str = "") -> str:
     return empty_text
 
 
+def _confidence_score(text: str) -> float | None:
+    match = CONFIDENCE_PERCENT_RE.search(text)
+    if not match:
+        return None
+    try:
+        percent = float(match.group(1))
+    except ValueError:
+        return None
+    if percent < 0 or percent > 100:
+        return None
+    return percent / 100
+
+
+def _source_snippet(text: str, filename: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip(" -*\t")
+        if filename in stripped:
+            return stripped
+    return f"Structured KPI answer cited {filename}."
+
+
+def _structured_kpi_citation(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    answer = extract_text(payload)
+    if not answer or UNGROUNDED_RE.search(answer):
+        return []
+
+    match = PDF_FILENAME_RE.search(answer)
+    if not match:
+        return []
+
+    filename = match.group(1)
+    citation: dict[str, Any] = {
+        "filename": filename,
+        "section_label": "Structured KPI extract",
+        "snippet": _source_snippet(answer, filename),
+    }
+    score = _confidence_score(answer)
+    if score is not None:
+        citation["score"] = score
+    return [citation]
+
+
 def extract_citations(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     citations = payload.get("citations") or payload.get("sources") or []
-    if not isinstance(citations, list):
-        return []
     normalized: list[dict[str, Any]] = []
-    for citation in citations:
-        if isinstance(citation, Mapping):
-            normalized.append(dict(citation))
-        elif citation is not None:
-            normalized.append({"source": str(citation)})
+    if isinstance(citations, list):
+        for citation in citations:
+            if isinstance(citation, Mapping):
+                normalized.append(dict(citation))
+            elif citation is not None:
+                normalized.append({"source": str(citation)})
+    elif isinstance(citations, Mapping):
+        normalized.append(dict(citations))
+    elif citations:
+        normalized.append({"source": str(citations)})
     if normalized:
         return normalized
 
@@ -93,7 +151,10 @@ def extract_citations(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "section_label": "Knowledge Assistant citation",
                 "snippet": snippet,
             })
-    return normalized
+    if normalized:
+        return normalized
+
+    return _structured_kpi_citation(payload)
 
 
 def normalise_agent_response(
