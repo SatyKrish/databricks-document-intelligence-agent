@@ -214,6 +214,10 @@ In the workspace UI: **Apps → `doc-intel-analyst-demo`**. Ask:
 
 You should see a grounded answer with citation chips linking to `ACME_10K_2024.pdf` / `Risk`.
 
+Example deployed Databricks App validation:
+
+![Deployed 10-K Analyst app showing an ACME revenue answer with a structured KPI citation chip](./docs/databricks-app-dogfood.png)
+
 ### 7. Steady-state deploys
 
 After the first bring-up, iteration depends on what changed:
